@@ -158,8 +158,8 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
         for obj, meta, sim in zip(_recent_objs, _recent_meta, sims):
             if sim < thr:
                 continue
-            ts = float(meta.get("ts") or 0.0)
-            age = max(0.0, now - ts)
+            ts_meta = float(meta.get("ts") or 0.0)
+            age = max(0.0, now - ts_meta)
             rec = 0.0 if RECENCY_WINDOW_SEC <= 0 else max(0.0, 1.0 - (age / RECENCY_WINDOW_SEC))
             # Term overlap boost and session affinity
             terms = meta.get("terms") or []
@@ -239,8 +239,8 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
             src_i, obj_i = items[idx_c]
             if float(sim or 0.0) < thr:
                 continue
-            ts = float(obj_i.get("meta", {}).get("ts") or 0.0)
-            age = max(0.0, now - ts)
+            ts_meta = float(obj_i.get("meta", {}).get("ts") or 0.0)
+            age = max(0.0, now - ts_meta)
             rec = 0.0 if RECENCY_WINDOW_SEC <= 0 else max(0.0, 1.0 - (age / RECENCY_WINDOW_SEC))
             # Term overlap and session boost
             meta_i = obj_i.get("meta", {})
@@ -285,8 +285,8 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
             for (src_i, obj_i), sim in zip(buf_meta_src, sims):
                 if sim < thr_curr:
                     continue
-                ts = float(obj_i.get("meta", {}).get("ts") or 0.0)
-                age = max(0.0, now - ts)
+                ts_meta = float(obj_i.get("meta", {}).get("ts") or 0.0)
+                age = max(0.0, now - ts_meta)
                 rec = 0.0 if RECENCY_WINDOW_SEC <= 0 else max(0.0, 1.0 - (age / RECENCY_WINDOW_SEC))
                 score = 0.8 * sim + 0.2 * rec
                 if (obj_i.get("meta", {}).get("source") or "").strip().lower() == "state" and short_q:

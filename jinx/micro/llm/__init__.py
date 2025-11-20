@@ -23,9 +23,11 @@ from .smart_cache import (
 )
 
 from .openai_caller import call_openai
+from .openai_model_info import get_model_info
 
 __all__ = [
     "call_openai",
+    "get_model_info",
     "build_planner_context",
     "execute_planning_chain_smart",
     "execute_context_chain_smart",

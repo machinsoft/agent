@@ -22,44 +22,6 @@ I’m **Jinx** — an autonomous engineering agent built for teams that ship. I 
 
 ---
 
-## 🧩 How It Works
-
-```
-User Intent → [jinx.py Entrypoint]
-                ↓
- [Conversation Orchestrator] → Injects Memory + Embeddings
-                ↓
-             [LLM / Model]
-                ↓
-        Generated Code → [Sandbox Execution]
-                ↓
-         Validation → Update Memory → Log
-```
-
-### Core Components
-
-* **Entrypoint:** `jinx.py` — initializes async orchestrator.
-* **Orchestrator:** `jinx/conversation/orchestrator.py` — fuses context, memory, and embeddings.
-* **Memory System:** `jinx/memory/storage.py`, `jinx/memory/optimizer.py` — handles `<evergreen>` and transcript compaction.
-* **Embeddings Engine:** `jinx/embeddings/retrieval.py`, `jinx/micro/embeddings/*` — semantic slicing and ANN retrieval.
-* **Brain Module:** `jinx/micro/brain/*` — concept attention and cognitive linking.
-* **Sandbox:** `jinx/sandbox/*` — non‑blocking subprocess for executing generated code.
-* **Logging:** `jinx/log_paths.py` — structured logs, audit‑ready.
-
-Together, these layers form Jinx’s autonomous reasoning cycle.
-
----
-
-## ⭐ Star History
-
-<p align="center">
-  <a href="https://star-history.com/#machinegpt/agent&Date">
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=machinegpt/agent&type=Date&theme=dark" />
-  </a>
-</p>
-
----
-
 ## 🔧 Environment Setup
 
 ### Python Virtual Environment
@@ -83,7 +45,6 @@ source .venv/bin/activate
 ```
 
 ### Project Setup
-- Runtime ensures optional dependencies when needed (e.g., `aiofiles`, `prompt_toolkit`). No `requirements.txt` necessary.
 - Provide an OpenAI API key and configuration via `.env` at project root. See `.env.example` for all keys:
 
 Required:
@@ -123,56 +84,6 @@ This launches an interactive REPL. Describe a goal — Jinx plans, writes code, 
 
 ---
 
-## 📚 Example Interaction
-
-**User:** “Write a Python function to compute factorial and add tests.”
-
-**Jinx:**
-
-* Generates `factorial(n)` implementation.
-* Creates test (`assert factorial(5) == 120`).
-* Executes safely in sandbox.
-* If failed — refines until success.
-
-> Result: *Function implemented, validated, and logged.*
-
----
-
-## 🏗️ Architecture Overview
-
-The runtime is async‑first and auditable:
-
-* **Entrypoint** → `jinx.py`
-* **Conversation Orchestrator** → dialogue + embeddings + memory injection
-* **Memory Layer** → persistent + compacted context
-* **Embeddings Engine** → ANN‑based semantic recall
-* **Brain Module** → concept recognition and linking
-* **Sandbox Runtime** → secure subprocess for isolated execution
-* **Logging** → complete audit trail under `/log/`
-
----
-
-## 🔐 Security & Compliance
-
-* **Secrets:** Managed via `.env` (never logged).
-* **Sandbox:** All model code runs isolated; not a hard boundary, but a safety layer.
-* **Logging:** Structured; avoid sensitive data in prompts.
-
----
-
-## ✨ Contributions
-
-Contributions, suggestions, and feature proposals are welcome.
-
-* Open issues for discussion before PRs.
-* Follow modular design — see `jinx/contracts.py`.
-
-<a href="https://github.com/machinegpt/agent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=machinegpt/agent" />
-</a>
-
----
-
 ## 📄 License
 
 Released under the **MIT License**. See [`LICENSE`](LICENSE) for details.
@@ -187,3 +98,9 @@ Released under the **MIT License**. See [`LICENSE`](LICENSE) for details.
 ---
 
 **Jinx — a system learning to build and evolve itself.**
+
+---
+
+## Experimental Disclaimer
+
+This project is largely written and maintained by an artificial intelligence system. Generated code and outputs may be incomplete, insecure, or incorrect and are not independently verified or audited. Treat everything as experimental software and review/validate all changes before using them in production. Use at your own risk.

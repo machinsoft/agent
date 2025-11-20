@@ -14,6 +14,13 @@ import jinx.state as jx_state
 from jinx.micro.runtime.task_ctx import current_group
 from jinx.micro.rt.backpressure import clear_throttle_if_ttl
 from jinx.micro.runtime.plugins import publish_event as _publish_event
+from jinx.micro.runtime.msg_id import (
+    split_tags as _split_tags,
+    ensure_message_id as _ensure_id,
+    child_id as _child_id,
+    wrap_with_tags as _wrap_tags,
+)
+from jinx.micro.runtime.dedup_registry import DedupRegistry as _DedupReg
 try:
     from jinx.rt.wcet import update as _wcet_update, estimate_deadline_ms as _wcet_est
 except Exception:
@@ -119,6 +126,38 @@ def _split_if_multi(msg: str, group_id: str) -> Sequence[str] | None:
     return None
 
 
+# Fallback splitter without upper bound. Use simpler rules and accept large batches,
+# higher-level capacity guards will bound pending size.
+def _split_any_unbounded(msg: str) -> list[str] | None:
+    if not msg:
+        return None
+    s = msg.strip()
+    if not s:
+        return None
+    # Numbered list with period
+    parts = _re.findall(r'(?:^|\n)\s*\d+\.\s+([^\n]+)', s)
+    if len(parts) >= 2:
+        return [p.strip() for p in parts if p.strip()]
+    # Numbered list with paren
+    parts = _re.findall(r'(?:^|\n)\s*\d+\)\s+([^\n]+)', s)
+    if len(parts) >= 2:
+        return [p.strip() for p in parts if p.strip()]
+    # Bullets
+    parts = _re.findall(r'(?:^|\n)\s*[-*•]\s+([^\n]+)', s)
+    if len(parts) >= 2:
+        return [p.strip() for p in parts if p.strip()]
+    # Semicolons (short-ish)
+    if ';' in s:
+        parts = [p.strip() for p in s.split(';') if p.strip()]
+        if len(parts) >= 2:
+            return parts
+    # Newlines
+    parts = [ln.strip() for ln in s.split('\n') if ln.strip()]
+    if len(parts) >= 2:
+        return parts
+    return None
+
+
 async def frame_shift(q: asyncio.Queue[str]) -> None:
     """Process queue items with bounded concurrency and a single spinner.
 
@@ -181,8 +220,9 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
             return "main"
 
     def _strip_group_tag(msg: str) -> str:
-        m = _re.match(r"\s*\[#group:[^\]]+\]\s*(.*)", msg or "")
-        return m.group(1) if m else msg
+        # Now strips both group/id tags via msg_id utilities
+        _mid, _grp, _body = _split_tags(msg)
+        return _body
     spin_evt: asyncio.Event | None = None
     spin_task: asyncio.Task | None = None
     spin_start_t: float | None = None
@@ -244,7 +284,23 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
     except Exception:
         step_ms = 0
 
-    async def _run_one(s: str, gid: str) -> None:
+    # Append helper with capacity guard and event publishing
+    def _pend_add(gid: str, text: str) -> bool:
+        dq = pending_by_group[gid]
+        try:
+            cap = dq.maxlen
+            if cap is not None and len(dq) >= cap:
+                try:
+                    _publish_event("queue.drop", {"group": gid, "text": text})
+                except Exception:
+                    pass
+                return False
+        except Exception:
+            pass
+        dq.append(text)
+        return True
+
+    async def _run_one(s: str, gid: str, _msg_id: str | None) -> None:
         try:
             tok = current_group.set(gid)
             t0 = time.perf_counter()
@@ -282,6 +338,13 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
         finally:
             try:
                 current_group.reset(tok)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            # Mark dedup lifecycle finished
+            try:
+                # Access closure of registry if present
+                if _msg_id:
+                    _dedup.on_finished(_msg_id)
             except Exception:
                 pass
 
@@ -347,6 +410,12 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
             return dq.popleft()
 
     try:
+        # De-dup registry: time-bounded recent-completion memory
+        try:
+            _DETTL = float(os.getenv("JINX_DEDUP_TTL", "600"))
+        except Exception:
+            _DETTL = 600.0
+        _dedup = _DedupReg(_DETTL)
         while True:
             # Respect global shutdown fast-path
             if jx_state.shutdown_event.is_set():
@@ -373,27 +442,75 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                     item = await asyncio.wait_for(q.get(), timeout=0.01)
                 except asyncio.TimeoutError:
                     break
-                gid = _group_of(item)
+                # Normalize/ensure ID and parse tags
+                try:
+                    item = _ensure_id(item)
+                except Exception:
+                    pass
+                mid, grp_tag, body0 = _split_tags(item)
+                gid = (grp_tag or _group_of(item) or "main").strip()
+                # Try-admit by ID (skip duplicates already pending/inflight/done)
+                try:
+                    if mid and not _dedup.try_admit(mid):
+                        continue
+                except Exception:
+                    pass
                 if gid not in pending_by_group:
                     pending_by_group[gid] = deque(maxlen=_GMAX)
                     groups_rr.append(gid)
                 # Attempt multi-split (e.g., multiple short tasks in one message)
-                subs = _split_if_multi(item, gid)
+                subs = _split_if_multi(body0, gid)
+                if not subs:
+                    subs = _split_any_unbounded(body0)
                 if subs:
-                    for it in subs:
-                        pending_by_group[gid].append(it)
+                    # Assign child IDs derived from parent id
+                    _ad, _drop = 0, 0
+                    for idx, it in enumerate(subs):
+                        try:
+                            cid = _child_id(mid, idx)
+                            # Enforce dedup for child IDs as well
+                            try:
+                                if cid and not _dedup.try_admit(cid):
+                                    _drop += 1
+                                    continue
+                            except Exception:
+                                pass
+                            submsg = _wrap_tags(gid, cid, it)
+                        except Exception:
+                            submsg = it
+                            cid = None
+                        if _pend_add(gid, submsg):
+                            _ad += 1
+                        else:
+                            _drop += 1
                         try:
                             _publish_event("queue.intake", {"group": gid, "text": it})
                         except Exception:
                             pass
-                else:
-                    pending_by_group[gid].append(item)
-                drained += 1
-                if not subs:
+                    # Batch summary
                     try:
-                        _publish_event("queue.intake", {"group": gid, "text": item})
+                        from jinx.log_paths import BLUE_WHISPERS as _BW
+                        from jinx.logger.file_logger import append_line as _append
+                        await _append(_BW, f"[intake] group={gid} parent={mid or '-'} subs={len(subs)} admitted={_ad} dropped={_drop}")
                     except Exception:
                         pass
+                else:
+                    _ad = 1 if _pend_add(gid, item) else 0
+                    _drop = 0 if _ad == 1 else 1
+                    if not subs:
+                        try:
+                            _publish_event("queue.intake", {"group": gid, "text": item})
+                        except Exception:
+                            pass
+                    # Single-item summary
+                    try:
+                        from jinx.log_paths import BLUE_WHISPERS as _BW
+                        from jinx.logger.file_logger import append_line as _append
+                        await _append(_BW, f"[intake] group={gid} parent={mid or '-'} admitted={_ad} dropped={_drop}")
+                    except Exception:
+                        pass
+                # Count this intake iteration regardless of split
+                drained += 1
 
             # Fill up to concurrency limit with fair round-robin across groups
             filled = False
@@ -415,7 +532,17 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                         raw = await _pop_next_async(dq, prefer_simple)
                         if raw is None:
                             continue
-                        msg = _strip_group_tag(raw)
+                        # Extract id/group/body and mark as scheduled
+                        try:
+                            _mid, _grp, _body = _split_tags(raw)
+                        except Exception:
+                            _mid, _grp, _body = (None, None, _strip_group_tag(raw))
+                        try:
+                            if _mid:
+                                _dedup.on_scheduled(_mid)
+                        except Exception:
+                            pass
+                        msg = _body
                         await _ensure_spinner()
                         # Deadline-aware scheduling (EDF skeleton): prefer schedule_turn
                         try:
@@ -427,11 +554,16 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                                 _fallback_dl = 15000
                             base_dl = int(step_ms) if int(step_ms or 0) > 0 else _fallback_dl
                             _dl = _wcet_est("turn", base_dl)
-                            t = _schedule_turn(lambda: _run_one(msg, gid), deadline_ms=_dl, name=f"turn:{gid}")
+                            t = _schedule_turn(lambda: _run_one(msg, gid, _mid), deadline_ms=_dl, name=f"turn:{gid}")
                         except Exception:
-                            t = asyncio.create_task(_run_one(msg, gid))
+                            t = asyncio.create_task(_run_one(msg, gid, _mid))
                         active.add(t)
                         task_group[t] = gid
+                        # increment per-group active count for fairness
+                        try:
+                            group_active_count[gid] = int(group_active_count.get(gid, 0)) + 1
+                        except Exception:
+                            group_active_count[gid] = 1
                         try:
                             _publish_event("turn.scheduled", {"group": gid, "text": msg})
                         except Exception:
@@ -490,16 +622,58 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                         with contextlib.suppress(asyncio.CancelledError):
                             await get_task
                     break
-                # Got a new item; enqueue into group buffer and continue loop
+                # Got a new item; enqueue into group buffer and continue loop (apply same normalization/dedup)
                 try:
                     item2 = get_task.result()
                 except Exception:
                     continue
-                gid2 = _group_of(item2)
+                # Ensure ID then parse
+                try:
+                    item2 = _ensure_id(item2)
+                except Exception:
+                    pass
+                _mid2, _grp2, _body2 = _split_tags(item2)
+                gid2 = (_grp2 or _group_of(item2) or "main").strip()
+                try:
+                    if _mid2 and not _dedup.try_admit(_mid2):
+                        continue
+                except Exception:
+                    pass
                 if gid2 not in pending_by_group:
                     pending_by_group[gid2] = deque(maxlen=_GMAX)
                     groups_rr.append(gid2)
-                pending_by_group[gid2].append(item2)
+                # Attempt multi-split for idle-path as well
+                _subs2 = _split_if_multi(_body2, gid2)
+                if not _subs2:
+                    _subs2 = _split_any_unbounded(_body2)
+                if _subs2:
+                    _ad2, _drop2 = 0, 0
+                    for idx, it in enumerate(_subs2):
+                        try:
+                            _cid2 = _child_id(_mid2, idx)
+                            try:
+                                if _cid2 and not _dedup.try_admit(_cid2):
+                                    _drop2 += 1
+                                    continue
+                            except Exception:
+                                pass
+                            _sub2 = _wrap_tags(gid2, _cid2, it)
+                        except Exception:
+                            _sub2 = it
+                        if _pend_add(gid2, _sub2):
+                            _ad2 += 1
+                        else:
+                            _drop2 += 1
+                else:
+                    _ad2 = 1 if _pend_add(gid2, item2) else 0
+                    _drop2 = 0 if _ad2 == 1 else 1
+                # Idle-branch summary
+                try:
+                    from jinx.log_paths import BLUE_WHISPERS as _BW
+                    from jinx.logger.file_logger import append_line as _append
+                    await _append(_BW, f"[intake.idle] group={gid2} parent={_mid2 or '-'} subs={len(_subs2) if _subs2 else 0} admitted={_ad2} dropped={_drop2}")
+                except Exception:
+                    pass
             else:
                 # Give control back to event loop to keep RT responsiveness
                 await asyncio.sleep(0)

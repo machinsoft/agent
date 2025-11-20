@@ -40,6 +40,8 @@ async def code_primer(prompt_override: str | None = None) -> tuple[str, str]:
     return await build_header_and_tag(prompt_override)
 
 
+
+
 async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> tuple[str, str, str, str, str]:
     """Compose instructions with brain systems integration and ML enhancement."""
     jx, tag = await code_primer(prompt_override)
@@ -68,7 +70,7 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
         except Exception:
             board_on = True
         if board_on and ("<$board" not in jx):
-            jx = "<$board fen>\n" + jx
+            jx = "<board fen>\n" + jx
         await _yield0()
         # Inject compact per-group rolling summary (if any)
         try:
@@ -245,6 +247,29 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
             await write_token_hint(est_tokens)
         except Exception:
             pass
+    except Exception:
+        pass
+    # Dynamic context guide for burning_logic prompt only
+    try:
+        active_prompt = (prompt_override or os.getenv("JINX_PROMPT") or os.getenv("PROMPT_NAME") or "burning_logic")
+        if active_prompt.strip().lower() == "burning_logic":
+            # Detect all context tags present in final composed prompt
+            import re as _re
+            context_tags = set(_re.findall(r"<([a-z_]+)>", jx))
+            from jinx.prompts.burning_logic import _context_guide as _bl_guide
+            guide = _bl_guide(context_tags)
+            if guide:
+                # Insert after header, before main content
+                lines = jx.split("\n", 10)
+                # Find insertion point (after header lines starting with key:/os:/arch:/etc)
+                insert_idx = 0
+                for i, ln in enumerate(lines):
+                    if ln.startswith(("pulse:", "key:", "os:", "arch:", "host:", "user:")):
+                        insert_idx = i + 1
+                    else:
+                        break
+                lines.insert(insert_idx, guide)
+                jx = "\n".join(lines)
     except Exception:
         pass
     model = os.getenv("OPENAI_MODEL", "gpt-4.1")

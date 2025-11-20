@@ -13,6 +13,7 @@ import os
 import time
 import contextlib
 from jinx.bootstrap import ensure_optional
+from jinx.micro.runtime.msg_id import ensure_message_id as _ensure_id
 from typing import Any, cast
 from jinx.logging_service import blast_mem, bomb_log
 from jinx.log_paths import TRIGGER_ECHOES, BLUE_WHISPERS
@@ -49,8 +50,10 @@ async def _simple_input_loop(qe: asyncio.Queue[str]) -> None:
                     except Exception:
                         pass  # Logging failure shouldn't stop input
                     
+                    # Attach stable message ID before enqueue so downstream dedup works
+                    _msg = _ensure_id(user_input.strip())
                     # Put in queue - THIS IS CRITICAL
-                    await qe.put(user_input.strip())
+                    await qe.put(_msg)
                 
             except EOFError:
                 # Ctrl+D pressed - normal exit
@@ -295,8 +298,9 @@ async def neon_input(qe: asyncio.Queue[str]) -> None:
                     await st
                 v: str = pt.result()
                 if v.strip():
-                    await bomb_log(v, TRIGGER_ECHOES)
-                    await qe.put(v.strip())
+                    _msg = _ensure_id(v.strip())
+                    await bomb_log(_msg, TRIGGER_ECHOES)
+                    await qe.put(_msg)
                     consecutive_errors = 0  # Reset on success
                 # expose tasks for final cleanup
                 prompt_task = pt

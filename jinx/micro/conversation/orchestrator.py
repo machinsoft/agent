@@ -81,10 +81,13 @@ from jinx.micro.conversation.phases import (
 )
 
 
-async def shatter(x: str, err: Optional[str] = None) -> None:
-    """Drive a single conversation step and optionally handle an error context."""
+async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = None) -> None:
+    """Drive a single conversation step and optionally handle an error context.
+
+    turn_id: Optional external correlation id from the scheduler for observability.
+    """
     from jinx.micro.logger.debug_logger import debug_log
-    await debug_log(f"START processing: {x[:80]}", "SHATTER")
+    await debug_log(f"START processing [id={turn_id or '-'}]: {x[:80]}", "SHATTER")
     
     # === DYNAMIC CONFIGURATION ADAPTATION ===
     # AI-powered configuration tuning based on request type
@@ -532,33 +535,13 @@ async def shatter(x: str, err: Optional[str] = None) -> None:
             ctx = "\n".join([c for c in [ctx, resolved_block, preview_block] if c])
 
         # Automated action routing: attempt self-executing code modification
-        auto_block = ""
+        # Disabled embedding of auto_action_report into prompts to avoid polluting OpenAI API input.
+        # Routing still executes internally if enabled, but no report is appended to ctx.
         try:
             from jinx.micro.runtime.action_router import auto_route_and_execute as _auto_route
-            # Use strict RT budget; router will also enforce its own gates
-            auto_report = await _auto_route(x or "", budget_ms=1500)
-            if isinstance(auto_report, dict) and auto_report.get("executed"):
-                # Compact report for LLM/UI context
-                lines = []
-                lines.append(f"task: {auto_report.get('task_type')}")
-                try:
-                    lines.append(f"confidence: {float(auto_report.get('confidence') or 0.0):.2f}")
-                except Exception:
-                    lines.append("confidence: 0.00")
-                if auto_report.get('rel') or auto_report.get('file'):
-                    lines.append(f"file: {auto_report.get('rel') or auto_report.get('file')}")
-                lines.append(f"success: {bool(auto_report.get('patch_success'))}")
-                msg = str(auto_report.get('message') or "").strip()
-                if msg:
-                    # trim long messages
-                    if len(msg) > 400:
-                        msg = msg[:400] + "..."
-                    lines.append(f"message: {msg}")
-                auto_block = "<auto_action_report>\n" + "\n".join(lines) + "\n</auto_action_report>"
+            _ = await _auto_route(x or "", budget_ms=1500)
         except Exception:
-            auto_block = ""
-        if auto_block:
-            ctx = "\n".join([c for c in [ctx, auto_block] if c])
+            pass
         # Optional compaction for orchestrator chains (default ON)
         try:
             _orch_cmp = str(os.getenv("JINX_CTX_COMPACT_ORCH", "1")).lower() not in ("", "0", "false", "off", "no")
@@ -760,6 +743,8 @@ async def shatter(x: str, err: Optional[str] = None) -> None:
                 if not e:
                     return
                 try:
+                    # Label the preview so it doesn't look like a duplicate answer box
+                    await bomb_log(f"[early exec error] code_id={cid} turn_id={turn_id or '-'}")
                     pretty_echo(minimal)
                     await show_sandbox_tail()
                 except Exception:
