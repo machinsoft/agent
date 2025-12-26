@@ -825,18 +825,27 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                 start = rr_idx % max(1, n)
                 # Two passes: prefer simple-locator, then general
                 for prefer_simple in (True, False):
-                    i = 0
-                    while len(active) < _MAX_CONC and i < n:
-                        gid = groups_rr[(start + i) % n]
-                        i += 1
+                    if len(active) >= _MAX_CONC:
+                        break
+                    # Keep scheduling until we hit global capacity or exhaust all groups
+                    stalled_groups: set[str] = set()
+                    round_idx = 0
+                    while len(active) < _MAX_CONC and len(stalled_groups) < n:
+                        gid = groups_rr[(start + round_idx) % n]
+                        round_idx = (round_idx + 1) % n
+                        if gid in stalled_groups:
+                            continue
                         # respect per-group concurrency cap
                         if int(group_active_count.get(gid, 0)) >= _GCONC:
+                            stalled_groups.add(gid)
                             continue
                         dq = pending_by_group.get(gid)
                         if not dq:
+                            stalled_groups.add(gid)
                             continue
                         raw = await _pop_next_ready_async(dq, prefer_simple)
                         if raw is None:
+                            stalled_groups.add(gid)
                             continue
                         # Extract id/group/body and mark as scheduled
                         try:
@@ -849,6 +858,7 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                                 dq.appendleft(raw)
                             except Exception:
                                 pass
+                            stalled_groups.add(gid)
                             continue
                         try:
                             if _mid:
@@ -883,9 +893,7 @@ async def frame_shift(q: asyncio.Queue[str]) -> None:
                         except Exception:
                             pass
                         filled = True
-                        if len(active) >= _MAX_CONC:
-                            break
-                rr_idx = (start + i) % max(1, len(groups_rr))
+                rr_idx = (start + round_idx) % max(1, len(groups_rr))
 
             # Reap any finished tasks
             done_now = [t for t in active if t.done()]
