@@ -2,9 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import time
-import os
 from typing import List, Tuple, Dict, Any
 import hashlib
+
+# AutoBrain adaptive configuration
+try:
+    from jinx.micro.runtime.autobrain_config import (
+        get_int as _ab_int,
+        get as _ab_get,
+        record_outcome as _ab_record,
+    )
+    _AB_AVAILABLE = True
+except Exception:
+    _AB_AVAILABLE = False
+    def _ab_int(name, ctx=None): return 5
+    def _ab_get(name, ctx=None): return 0.25
+    def _ab_record(name, success, latency_ms=0, ctx=None): pass
 
 def _recent_items_snapshot():
     try:
@@ -34,21 +47,18 @@ try:
 except Exception:
     _get_seeds = None  # type: ignore[assignment]
 
-DEFAULT_TOP_K = int(os.getenv("EMBED_TOP_K", "5"))
-# Balanced defaults; adapt at runtime based on query length
-SCORE_THRESHOLD = float(os.getenv("EMBED_SCORE_THRESHOLD", "0.25"))
-MIN_PREVIEW_LEN = int(os.getenv("EMBED_MIN_PREVIEW_LEN", "8"))
-MAX_FILES_PER_SOURCE = int(os.getenv("EMBED_MAX_FILES_PER_SOURCE", "500"))
-MAX_SOURCES = int(os.getenv("EMBED_MAX_SOURCES", "50"))
-QUERY_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-RECENCY_WINDOW_SEC = int(os.getenv("EMBED_RECENCY_WINDOW_SEC", str(24 * 3600)))
-EXHAUSTIVE = str(os.getenv("EMBED_EXHAUSTIVE", "0")).lower() in {"1", "true", "on", "yes"}
+DEFAULT_TOP_K = 5
+# Balanced defaults; adapt at runtime via AutoBrain
+SCORE_THRESHOLD = 0.25
+MIN_PREVIEW_LEN = 8
+MAX_FILES_PER_SOURCE = 500
+MAX_SOURCES = 50
+QUERY_MODEL = "text-embedding-3-small"
+RECENCY_WINDOW_SEC = 24 * 3600
+EXHAUSTIVE = False
 
 # Shared hot-store for runtime items
-try:
-    _HOT_TTL_MS = int(os.getenv("EMBED_RUNTIME_HOT_TTL_MS", "1500"))
-except Exception:
-    _HOT_TTL_MS = 1500
+_HOT_TTL_MS = 1500
 from .hot_store import get_runtime_items_hot
 
 async def _load_runtime_items() -> List[Tuple[str, Dict[str, Any]]]:
@@ -108,10 +118,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
     # Precompute query terms once
     q_terms = _terms_of(q)
     # Time-slice gating: cooperative yield via TimeSlicer to keep UI responsive
-    try:
-        _SLICE_MS = max(4, int(os.getenv("EMBED_SLICE_MS", "12")))
-    except Exception:
-        _SLICE_MS = 12
+    _SLICE_MS = 12
     ts = TimeSlicer(ms=_SLICE_MS)
     # Session affinity (prefer current per-turn group; fallback to env)
     try:
@@ -119,22 +126,11 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
         sess = _sess_cv or None
     except Exception:
         sess = None
-    if sess is None:
-        try:
-            sess = (os.getenv("JINX_SESSION", "").strip() or None)
-        except Exception:
-            sess = None
 
     # 1) Fast-path: score in-memory recent items first
-    try:
-        state_boost = max(1.0, float(os.getenv("EMBED_STATE_BOOST", "1.1")))
-    except Exception:
-        state_boost = 1.1
-    try:
-        state_rec_mult = max(0.0, float(os.getenv("EMBED_STATE_RECENCY_MULT", "0.5")))
-    except Exception:
-        state_rec_mult = 0.5
-    short_q = (qlen <= int(os.getenv("JINX_CONTINUITY_SHORTLEN", "80")))
+    state_boost = 1.1
+    state_rec_mult = 0.5
+    short_q = (qlen <= 80)
     _recent_objs: List[Dict[str, Any]] = []
     _recent_vecs: List[List[float]] = []
     _recent_meta: List[Dict[str, Any]] = []
@@ -166,10 +162,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
             overlap = _term_overlap(q_terms, terms) if terms else 0.0
             sess_boost = 1.0
             if sess and (meta.get("session") or None) == sess:
-                try:
-                    sess_boost = float(os.getenv("EMBED_SESSION_BOOST", "1.08"))
-                except Exception:
-                    sess_boost = 1.08
+                sess_boost = 1.08
             score = (0.7 * sim + 0.2 * rec + 0.1 * overlap) * sess_boost
             if (meta.get("source") or "").strip().lower() == "state" and short_q:
                 score *= state_boost * (1.0 + state_rec_mult * rec)
@@ -185,10 +178,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
     # 2) Persisted items: filter by source and preview, prefer current session, cap total, then ANN overlay
     items_all = await hot_task
     # Cap total items to bound runtime; lower under throttle
-    try:
-        cap_base = max(500, int(os.getenv("EMBED_RUNTIME_MAX_ITEMS", "4000")))
-    except Exception:
-        cap_base = 4000
+    cap_base = 4000
     cap = min(cap_base, 1500) if jx_state.throttle_event.is_set() else cap_base
     items_grp: List[Tuple[str, Dict[str, Any]]] = []
     items_oth: List[Tuple[str, Dict[str, Any]]] = []
@@ -218,10 +208,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
     items: List[Tuple[str, Dict[str, Any]]] = (items_grp + items_oth)[:cap]
 
     # ANN candidate generation
-    try:
-        overfetch = max(k_eff * 4, int(os.getenv("EMBED_RUNTIME_ANN_OVERFETCH", str(k_eff * 6))))
-    except Exception:
-        overfetch = k_eff * 6
+    overfetch = k_eff * 6
     # Reduce breadth under throttle
     if jx_state.throttle_event.is_set():
         overfetch = max(k_eff * 2, min(overfetch, k_eff * 3))
@@ -247,10 +234,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
             overlap = _term_overlap(q_terms, meta_i.get("terms") or [])
             sess_boost = 1.0
             if sess and (meta_i.get("session") or None) == sess:
-                try:
-                    sess_boost = float(os.getenv("EMBED_SESSION_BOOST", "1.08"))
-                except Exception:
-                    sess_boost = 1.08
+                sess_boost = 1.08
             score = (0.72 * sim + 0.18 * rec + 0.10 * overlap) * sess_boost
             if (obj_i.get("meta", {}).get("source") or "").strip().lower() == "state" and short_q:
                 score *= state_boost * (1.0 + state_rec_mult * rec)
@@ -266,10 +250,7 @@ async def retrieve_top_k(query: str, k: int | None = None, *, max_time_ms: int |
                 await ts.maybe_yield()
     else:
         # Batch cosine fallback
-        try:
-            B_base = max(64, int(os.getenv("EMBED_COSINE_BATCH", "256")))
-        except Exception:
-            B_base = 256
+        B_base = 256
         # Adaptive batch size based on throttle
         B = min(B_base, 256) if jx_state.throttle_event.is_set() else B_base
         # Adaptive threshold raising once we have k candidates
@@ -375,8 +356,8 @@ async def build_context_for(query: str, *, k: int | None = None, max_chars: int 
     q_hash = hashlib.sha256((query or "").strip().encode("utf-8", errors="ignore")).hexdigest() if query else ""
     parts: List[str] = []
     # Optional grouping and labels
-    show_labels = str(os.getenv("EMBED_CONTEXT_LABELS", "1")).strip().lower() not in ("", "0", "false", "off", "no")
-    group_on = str(os.getenv("EMBED_CONTEXT_GROUP", "1")).strip().lower() not in ("", "0", "false", "off", "no")
+    show_labels = True
+    group_on = True
     last_key = None
     total_chars = 0
     for score, src, obj in sorted(hits, key=lambda h: float((h[2].get("meta", {}).get("ts") or 0.0))):

@@ -7,13 +7,16 @@ from typing import Any, Dict
 from jinx.async_utils.fs import write_text
 from jinx.micro.embeddings.project_config import ROOT as PROJECT_ROOT
 
+_BRAIN_DIR = os.path.join(".jinx", "brain")
+_MEMORY_DIR = os.path.join(".jinx", "memory")
+
 
 def _brain_dir() -> str:
-    return os.getenv("JINX_BRAIN_DIR", os.path.join(".jinx", "brain"))
+    return _BRAIN_DIR
 
 
 def _memory_dir() -> str:
-    return os.getenv("JINX_MEMORY_DIR", os.path.join(".jinx", "memory"))
+    return _MEMORY_DIR
 
 
 def _safe_name(s: str, n: int = 40) -> str:

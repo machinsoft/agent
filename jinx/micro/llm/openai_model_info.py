@@ -31,9 +31,6 @@ def _mk(context_window: int, max_output_tokens: int) -> ModelInfo:
 def get_model_info(model_slug: str) -> Optional[ModelInfo]:
     slug = (model_slug or "").strip()
 
-    if slug in ("gpt-oss-20b", "gpt-oss-120b"):
-        return _mk(96_000, 32_000)
-
     if slug == "o3":
         return _mk(200_000, 100_000)
 

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from typing import Callable, Awaitable, Optional, Tuple
 import asyncio as _asyncio
-import os
 import time as _time
 from threading import Event as _TEvent, Lock as _TLock, BoundedSemaphore as _TBoundedSem
 
 from jinx.sandbox.executor import blast_zone
 from jinx.sandbox.async_runner import run_sandbox
 from jinx.micro.sandbox.normalizer import code_key as _code_key
+from jinx.micro.runtime.autobrain_config import (
+    get_int as _brain_int,
+    record_outcome as _brain_record,
+    TaskContext as _TaskCtx,
+)
 
 
 __all__ = ["blast_zone", "arcane_sandbox"]
@@ -17,18 +21,16 @@ __all__ = ["blast_zone", "arcane_sandbox"]
 _SBX_LOCK: _TLock = _TLock()
 _SBX_STATE: dict[str, Tuple[_TEvent, Optional[str], list[Tuple[_asyncio.AbstractEventLoop, Callable[[Optional[str]], Awaitable[None]]]]]] = {}
 
-# Cross-loop concurrency limiting (process count)
-try:
-    _SBX_CONC = max(1, int(os.getenv("JINX_SANDBOX_MAX_CONCURRENCY", "2")))
-except Exception:
-    _SBX_CONC = 2
-_SBX_TSEM: _TBoundedSem = _TBoundedSem(_SBX_CONC)
+# Adaptive concurrency from AutoBrain
+def _get_sbx_conc() -> int:
+    return _brain_int("sandbox_conc")
+
+# Initial semaphore (will be recreated dynamically if needed)
+_SBX_CONC_CURRENT = 2
+_SBX_TSEM: _TBoundedSem = _TBoundedSem(_SBX_CONC_CURRENT)
 
 # Short TTL cache to avoid immediate re-runs of identical code
-try:
-    _SBX_TTL_MS = max(0, int(os.getenv("JINX_SANDBOX_TTL_MS", "1000")))
-except Exception:
-    _SBX_TTL_MS = 1000
+_SBX_TTL_MS = 1000
 _SBX_CACHE: dict[str, Tuple[int, Optional[str]]] = {}
 
 
@@ -84,6 +86,7 @@ async def arcane_sandbox(c: str, call: Callable[[str | None], Awaitable[None]] |
     async def _runner() -> None:
         # Local holder to capture error from run_sandbox
         holder: dict[str, Optional[str]] = {"err": None}
+        t0 = _time.perf_counter()
 
         async def _cb(e: Optional[str]) -> None:
             holder["err"] = e
@@ -100,6 +103,13 @@ async def arcane_sandbox(c: str, call: Callable[[str | None], Awaitable[None]] |
                     _SBX_TSEM.release()
                 except Exception:
                     pass
+            # Report outcome to AutoBrain for learning
+            elapsed_ms = (_time.perf_counter() - t0) * 1000
+            success = holder["err"] is None
+            try:
+                _brain_record("sandbox_conc", success, elapsed_ms)
+            except Exception:
+                pass
 
         # Fan out callbacks and signal waiters
         with _SBX_LOCK:

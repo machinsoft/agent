@@ -14,12 +14,21 @@ from jinx.micro.memory.graph import query_graph as _query_graph
 from jinx.micro.memory.pin_store import load_pins as _pins_load, save_pins as _pins_save
 from jinx.micro.memory.router import assemble_memroute as _memroute
 from jinx.micro.memory.unified import assemble_unified_memory_lines as _mem_unified
-from jinx.micro.exec.run_exports import read_last_stdout as _run_stdout, read_last_stderr as _run_stderr, read_last_status as _run_status
 from jinx.micro.llm.macro_cache import memoized_call
 from jinx.micro.memory.turns import parse_active_turns as _parse_turns, get_user_message as _turn_user, get_jinx_reply_to as _turn_jinx
 from jinx.micro.embeddings.symbol_index import query_symbol_index as _sym_query
-from jinx.micro.exec.test_gen import gen_unit_test_stub as _gen_test_stub
-from jinx.micro.exec.test_runner import run_tests as _run_tests
+
+_EMB_TOPK_DEFAULT = 3
+_EMB_MS_DEFAULT = 180
+_EMB_PREVIEW_CHARS_DEFAULT = 160
+_MEM_TOPK_DEFAULT = 8
+_MEM_PREVIEW_CHARS_DEFAULT = 160
+_MACRO_PROVIDER_TTL_MS_DEFAULT = 1500
+_TURNS_PREVIEW_CHARS_DEFAULT = 160
+_RUN_EXPORT_TTL_MS_DEFAULT = 120000
+_CODE_TOPK_DEFAULT = 8
+_CODE_MS_DEFAULT = 280
+_CODE_PREVIEW_CHARS_DEFAULT = 160
 
 _registered = False
 
@@ -53,10 +62,7 @@ async def _emb_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             pass
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_EMB_TOPK", "3")))
-        except Exception:
-            n = 3
+        n = _EMB_TOPK_DEFAULT
     if not q:
         q = (ctx.input_text or "").strip()
     if not q:
@@ -70,14 +76,8 @@ async def _emb_handler(args: List[str], ctx: MacroContext) -> str:
         return ""
     
     await debug_log(f"Query='{q[:50]}...' k={n}", "MACRO:emb")
-    try:
-        ms = max(50, int(os.getenv("JINX_MACRO_EMB_MS", "180")))
-    except Exception:
-        ms = 180
-    try:
-        lim = max(24, int(os.getenv("JINX_MACRO_EMB_PREVIEW_CHARS", "160")))
-    except Exception:
-        lim = 160
+    ms = _EMB_MS_DEFAULT
+    lim = _EMB_PREVIEW_CHARS_DEFAULT
 
     out: List[str] = []
     if scope in ("dialogue", "dlg"):
@@ -134,14 +134,8 @@ async def _memfacts_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             n = 0
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "8")))
-        except Exception:
-            n = 8
-    try:
-        lim = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-    except Exception:
-        lim = 160
+        n = _MEM_TOPK_DEFAULT
+    lim = _MEM_PREVIEW_CHARS_DEFAULT
     try:
         txt = await _read_channel(kind)
     except Exception:
@@ -170,10 +164,7 @@ async def _memgraph_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             n = 0
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "8")))
-        except Exception:
-            n = 8
+        n = _MEM_TOPK_DEFAULT
     if not term:
         return ""
     try:
@@ -201,14 +192,8 @@ async def _memtopic_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             n = 0
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "8")))
-        except Exception:
-            n = 8
-    try:
-        lim = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-    except Exception:
-        lim = 160
+        n = _MEM_TOPK_DEFAULT
+    lim = _MEM_PREVIEW_CHARS_DEFAULT
     try:
         txt = await _read_topic(name)
     except Exception:
@@ -231,14 +216,8 @@ async def _memroute_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             n = 0
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "12")))
-        except Exception:
-            n = 12
-    try:
-        lim = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-    except Exception:
-        lim = 160
+        n = 12
+    lim = _MEM_PREVIEW_CHARS_DEFAULT
     q = (ctx.input_text or "").strip()
     if not q:
         try:
@@ -246,10 +225,7 @@ async def _memroute_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             q = ""
     # TTL memoization to avoid recomputation within a short window
-    try:
-        ttl_ms = int(os.getenv("JINX_MACRO_PROVIDER_TTL_MS", "1500"))
-    except Exception:
-        ttl_ms = 1500
+    ttl_ms = _MACRO_PROVIDER_TTL_MS_DEFAULT
     key = f"memroute|{n}|{lim}|{q}"
     async def _call() -> str:
         try:
@@ -295,10 +271,9 @@ async def _turns_handler(args: List[str], ctx: MacroContext) -> str:
     if n <= 0:
         return ""
     try:
-        lim = int(os.getenv("JINX_MACRO_TURNS_PREVIEW_CHARS", os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-        lim = max(24, lim)
+        lim = _TURNS_PREVIEW_CHARS_DEFAULT
     except Exception:
-        lim = 160
+        lim = _MEM_PREVIEW_CHARS_DEFAULT
     if clamp is not None:
         try:
             lim = max(24, int(clamp))
@@ -358,22 +333,19 @@ async def _run_handler(args: List[str], ctx: MacroContext) -> str:
     if n <= 0:
         n = 3 if kind in ("stdout","stderr") else 1
     if ttl_ms is None:
-        try:
-            ttl_ms = int(os.getenv("JINX_RUN_EXPORT_TTL_MS", "120000"))
-        except Exception:
-            ttl_ms = 120000
+        ttl_ms = _RUN_EXPORT_TTL_MS_DEFAULT
     if lim is None:
-        try:
-            lim = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-        except Exception:
-            lim = 160
+        lim = _MEM_PREVIEW_CHARS_DEFAULT
     # TTL memoization across identical macro invocations
-    try:
-        pttl = int(os.getenv("JINX_MACRO_PROVIDER_TTL_MS", "1500"))
-    except Exception:
-        pttl = 1500
+    pttl = _MACRO_PROVIDER_TTL_MS_DEFAULT
     key = f"run|{kind}|{n}|{ttl_ms}|{lim}"
     async def _call() -> str:
+        # Local import to avoid import-time cycles
+        from jinx.micro.exec.run_exports import (
+            read_last_stdout as _run_stdout,
+            read_last_stderr as _run_stderr,
+            read_last_status as _run_status,
+        )
         if kind == "stdout":
             return _run_stdout(n, lim, ttl_ms)
         if kind == "stderr":
@@ -421,81 +393,6 @@ async def _codegraph_handler(args: List[str], ctx: MacroContext) -> str:
         return " | ".join(out)
     # summary
     return f"defs:{len(defs)} calls:{len(calls)}"
-
-
-async def _testgen_handler(args: List[str], ctx: MacroContext) -> str:
-    """Generate a minimal unittest stub for a symbol: {{m:testgen:symbol[:chars=lim]}}"""
-    symbol = (args[0] if args else "").strip()
-    lim = None
-    # parse chars=lim
-    for a in (args[1:] if len(args) > 1 else []):
-        aa = (a or "").strip()
-        if aa.startswith("chars="):
-            try:
-                lim = int(aa.split("=",1)[1])
-            except Exception:
-                lim = None
-    if not symbol:
-        # try callable from input
-        m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", ctx.input_text or "")
-        if m:
-            symbol = m.group(1)
-    if not symbol:
-        return ""
-    try:
-        idx = await _sym_query(symbol)
-    except Exception:
-        idx = {"defs": [], "calls": []}
-    defs = list(idx.get("defs") or [])
-    if lim is None:
-        try:
-            lim = max(200, int(os.getenv("JINX_TESTGEN_PREVIEW_CHARS", "1200")))
-        except Exception:
-            lim = 1200
-    try:
-        stub = await _gen_test_stub(symbol, defs, preview_chars=int(lim or 1200))
-    except Exception:
-        return ""
-    return stub or ""
-
-
-async def _testrun_handler(args: List[str], ctx: MacroContext) -> str:
-    """Run tests and return a compact summary: {{m:test[:pattern][:chars=lim][:timeout=sec]}}
-
-    - pattern: optional pytest -k pattern
-    - chars: clamp for stdout/stderr preview (default JINX_MACRO_MEM_PREVIEW_CHARS)
-    - timeout: overall runner timeout in seconds (default from test_runner)
-    """
-    pattern = None
-    chars = None
-    timeout = None
-    for a in args:
-        aa = (a or "").strip()
-        if not aa:
-            continue
-        if aa.startswith("chars="):
-            try:
-                chars = int(aa.split("=",1)[1])
-            except Exception:
-                pass
-            continue
-        if aa.startswith("timeout="):
-            try:
-                timeout = float(aa.split("=",1)[1])
-            except Exception:
-                pass
-            continue
-        if pattern is None:
-            pattern = aa
-    try:
-        ok, out, err, status = await _run_tests(pattern, chars=chars, timeout_s=timeout)
-    except Exception:
-        return "tests: error"
-    # Prefer stderr message if failed
-    if ok:
-        return f"tests: ok | {out.strip()[:max(24, int(chars or 160))]}" if out else "tests: ok"
-    msg = (err or out or status or "failure").strip()
-    return f"tests: failure | {msg[:max(24, int(chars or 160))]}"
 
 
 # ----------------------- Code intelligence providers -----------------------
@@ -566,26 +463,19 @@ async def _code_handler(args: List[str], ctx: MacroContext) -> str:
     if not token:
         return ""
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_CODE_TOPK", "8")))
-        except Exception:
-            n = 8
+        n = _CODE_TOPK_DEFAULT
     if budget_ms is None:
-        try:
-            budget_ms = int(os.getenv("JINX_MACRO_CODE_MS", "280"))
-        except Exception:
-            budget_ms = 280
+        budget_ms = _CODE_MS_DEFAULT
     if lim is None:
-        try:
-            lim = max(24, int(os.getenv("JINX_MACRO_CODE_PREVIEW_CHARS", os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160"))))
-        except Exception:
-            lim = 160
+        lim = _CODE_PREVIEW_CHARS_DEFAULT
 
     # Attempt symbol index first (exact token) for defs/calls
     try:
         idx = await _sym_query(token)
     except Exception:
         idx = {"defs": [], "calls": []}
+    defs = idx.get("defs") or []
+    calls = idx.get("calls") or []
     if mode in ("def", "class") and idx.get("defs"):
         pairs = idx.get("defs")[:n]
         return " | ".join([f"{rel}:{ln}" for rel, ln in pairs])
@@ -650,10 +540,7 @@ async def _code_handler(args: List[str], ctx: MacroContext) -> str:
         return " | ".join(out[:n])
 
     # TTL memoization to avoid repeated scans on identical queries
-    try:
-        pttl = int(os.getenv("JINX_MACRO_PROVIDER_TTL_MS", "1500"))
-    except Exception:
-        pttl = 1500
+    pttl = _MACRO_PROVIDER_TTL_MS_DEFAULT
     key = f"code|{mode}|{token}|{n}|{budget_ms}|{lim}"
     return await memoized_call(key, pttl, _scan)
 
@@ -681,10 +568,7 @@ async def _policy_handler(args: List[str], ctx: MacroContext) -> str:
 
 
 def _pins_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_MEM_PINS_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 async def _pins_handler(args: List[str], ctx: MacroContext) -> str:
@@ -696,10 +580,7 @@ async def _pins_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             n = 0
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "8")))
-        except Exception:
-            n = 8
+        n = _MEM_TOPK_DEFAULT
     try:
         pins = _pins_load()
     except Exception:
@@ -710,8 +591,6 @@ async def _pins_handler(args: List[str], ctx: MacroContext) -> str:
 
 async def _pinadd_handler(args: List[str], ctx: MacroContext) -> str:
     """Add a pinned line: {{m:pinadd:line...}} (uses input_text if empty)."""
-    if not _pins_enabled():
-        return ""
     line = " ".join(args).strip()
     if not line:
         line = (ctx.input_text or "").strip()
@@ -732,8 +611,6 @@ async def _pinadd_handler(args: List[str], ctx: MacroContext) -> str:
 
 async def _pindel_handler(args: List[str], ctx: MacroContext) -> str:
     """Delete a pinned line by exact match: {{m:pindel:line...}}"""
-    if not _pins_enabled():
-        return ""
     line = " ".join(args).strip()
     if not line:
         return ""
@@ -778,14 +655,8 @@ async def _mem_handler(args: List[str], ctx: MacroContext) -> str:
         except Exception:
             pass
     if n <= 0:
-        try:
-            n = max(1, int(os.getenv("JINX_MACRO_MEM_TOPK", "6")))
-        except Exception:
-            n = 6
-    try:
-        lim = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-    except Exception:
-        lim = 160
+        n = 6
+    lim = _MEM_PREVIEW_CHARS_DEFAULT
 
     # Load memory texts
     try:
@@ -855,7 +726,5 @@ async def register_builtin_macros() -> None:
     await register_macro("pindel", _pindel_handler)
     await register_macro("code", _code_handler)
     await register_macro("codegraph", _codegraph_handler)
-    await register_macro("testgen", _testgen_handler)
-    await register_macro("test", _testrun_handler)
     await register_macro("policy", _policy_handler)
     _registered = True

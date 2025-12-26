@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List
 
 from jinx.micro.llm.service import spark_openai
 from .chain_utils import truthy_env, extract_tagged_block
+
+_CHAINED_REFLECT_ON = False
 
 
 async def run_reflector(user_text: str, plan: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, Any]:
@@ -14,7 +15,7 @@ async def run_reflector(user_text: str, plan: Dict[str, Any], evidence: Dict[str
     Returns: {"summary": str, "next_actions": [str, ...]}
     Gated by JINX_CHAINED_REFLECT.
     """
-    if str(os.getenv("JINX_CHAINED_REFLECT", "0")).lower() in ("", "0", "false", "off", "no"):
+    if not _CHAINED_REFLECT_ON:
         return {}
     payload = {
         "user": (user_text or "")[:500],

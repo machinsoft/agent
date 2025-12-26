@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 import asyncio
 import time
 from typing import Any, Dict, List, Tuple
+from pathlib import Path
 
 from .project_rerank import rerank_hits_unified
 from .project_config import ROOT
@@ -103,18 +103,9 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
     else:
         k = k
     # Brain activation: derive unified concepts from project+memory+KG to expand query
-    try:
-        _brain_enable = os.getenv("EMBED_BRAIN_ENABLE", "1").strip().lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        _brain_enable = True
-    try:
-        _brain_topk = max(4, int(os.getenv("EMBED_BRAIN_TOP_K", "12")))
-    except Exception:
-        _brain_topk = 12
-    try:
-        _brain_expand_max = max(2, int(os.getenv("EMBED_BRAIN_EXPAND_MAX_TOKENS", "6")))
-    except Exception:
-        _brain_expand_max = 6
+    _brain_enable = True
+    _brain_topk = 12
+    _brain_expand_max = 6
 
     brain_pairs: list[tuple[str, float]] = []
     brain_terms: list[str] = []
@@ -155,21 +146,12 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
         exp_query = (exp_query + " " + " ".join(seeds_terms)).strip()
 
     # In parallel, kick off memory retrieval when enabled (biased with brain tokens)
-    try:
-        _mem_enable = os.getenv("EMBED_AGG_MEM_ENABLE", "1").strip().lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        _mem_enable = True
-    try:
-        _mem_k = max(1, int(os.getenv("EMBED_AGG_MEM_K", "8")))
-    except Exception:
-        _mem_k = 8
+    _mem_enable = True
+    _mem_k = 8
     mem_task: asyncio.Task | None = None
     if _mem_enable:
         try:
-            try:
-                _mem_preview = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-            except Exception:
-                _mem_preview = 160
+            _mem_preview = 160
             mem_task = asyncio.create_task(_mem_unified(exp_query, k=_mem_k, preview_chars=_mem_preview))
         except Exception:
             mem_task = None
@@ -285,16 +267,10 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
     full_scope_used = 0
     codey_query = _is_code_like(query or "")  # currently informational; future heuristics may use it
     # Parallel snippet building with bounded concurrency
-    try:
-        _SNIP_CONC = max(1, int(os.getenv("EMBED_PROJECT_SNIPPET_CONC", "4")))
-    except Exception:
-        _SNIP_CONC = 4
+    _SNIP_CONC = 4
     sem = asyncio.Semaphore(_SNIP_CONC)
     # Additional throttled semaphore used only when system saturation is detected
-    try:
-        _SNIP_CONC_THR = max(1, int(os.getenv("EMBED_PROJECT_SNIPPET_CONC_THR", "1")))
-    except Exception:
-        _SNIP_CONC_THR = 1
+    _SNIP_CONC_THR = 1
     throttled_sem = asyncio.Semaphore(_SNIP_CONC_THR)
 
     prepared: List[Tuple[int, str, Dict[str, Any], bool, List[int]]] = []  # (idx, file_rel, meta, prefer_full, extra_centers_abs)
@@ -363,14 +339,8 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
     done = 0
     results: List[Tuple[int, str, Dict[str, Any], str, str, int, int, bool]] = []
     # Dosing config for throttled mode
-    try:
-        _DOSE_BATCH = max(1, int(os.getenv("EMBED_PROJECT_DOSE_BATCH", "4")))
-    except Exception:
-        _DOSE_BATCH = 4
-    try:
-        _DOSE_MS = max(0, int(os.getenv("EMBED_PROJECT_DOSE_MS", "8")))
-    except Exception:
-        _DOSE_MS = 8
+    _DOSE_BATCH = 4
+    _DOSE_MS = 8
 
     approx_len = 0
     for fut in asyncio.as_completed(tasks):
@@ -434,10 +404,7 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
         if is_full_scope:
             full_scope_used += 1
         # API lens enrichment (lightweight, env-gated)
-        try:
-            _api_on = os.getenv("EMBED_API_LENS", "1").strip().lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            _api_on = True
+        _api_on = True
         if _api_on and file_rel.endswith('.py'):
             try:
                 ap = _api_edges(file_rel, header, code_block)
@@ -471,11 +438,7 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
         # Optionally add a couple of usage references for the enclosing symbol (Python only)
         try:
             # Allow env override for usage references limit
-            try:
-                _usage_lim_env = os.getenv("JINX_REFS_USAGE_LIMIT", "")
-                usage_limit = int(_usage_lim_env) if _usage_lim_env.strip() else PROJ_USAGE_REFS_LIMIT
-            except Exception:
-                usage_limit = PROJ_USAGE_REFS_LIMIT
+            usage_limit = PROJ_USAGE_REFS_LIMIT
 
             async def _collect_usages() -> list[tuple[str, str]]:
                 out: list[tuple[str, str]] = []
@@ -485,9 +448,9 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
                         try:
                             if jx_state.throttle_event.is_set():
                                 async with THROTTLE_LOCK:
-                                    file_text = await read_text_abs_thread(os.path.join(ROOT, file_rel))
+                                    file_text = await read_text_abs_thread(str(Path(ROOT) / file_rel))
                             else:
-                                file_text = await read_text_abs_thread(os.path.join(ROOT, file_rel))
+                                file_text = await read_text_abs_thread(str(Path(ROOT) / file_rel))
                             if file_text:
                                 file_text_cache[file_rel] = file_text
                         except Exception:
@@ -525,16 +488,8 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
                     # Fallback: literal-occurrences refs when no symbol usages were found
                     if not out and (query or "").strip():
                         # Literal refs collection tuning via env
-                        try:
-                            _lim_env = os.getenv("JINX_REFS_LIT_LIMIT", "")
-                            _lim = int(_lim_env) if _lim_env.strip() else (6 if _is_code_like(query or "") else 3)
-                        except Exception:
-                            _lim = 6 if _is_code_like(query or "") else 3
-                        try:
-                            _ms_env = os.getenv("JINX_REFS_LIT_MS", "")
-                            _ms = int(_ms_env) if _ms_env.strip() else (300 if _is_code_like(query or "") else 200)
-                        except Exception:
-                            _ms = 300 if _is_code_like(query or "") else 200
+                        _lim = 6 if _is_code_like(query or "") else 3
+                        _ms = 300 if _is_code_like(query or "") else 200
                         def _lit_call():
                             try:
                                 return stage_literal_hits(query, _lim, max_time_ms=_ms)
@@ -546,8 +501,6 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
                                 meta2 = (obj2.get("meta") or {})
                                 ls2 = int(meta2.get("line_start") or 0)
                                 le2 = int(meta2.get("line_end") or 0)
-                                if str(rel2) == str(file_rel) and ls2 == int(use_ls or 0) and le2 == int(use_le or 0):
-                                    continue
                                 prev = (meta2.get("text_preview") or "").strip()
                                 if not prev:
                                     continue
@@ -587,10 +540,7 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
     mem_parts: List[str] = []
     if _mem_enable and mem_task is not None:
         try:
-            try:
-                _mem_budget = max(200, int(os.getenv("EMBED_AGG_MEM_BUDGET_CHARS", "1200")))
-            except Exception:
-                _mem_budget = 1200
+            _mem_budget = 1200
             mem_lines = await mem_task  # unified lines already deduped and clamped
             if mem_lines:
                 acc: List[str] = []
@@ -620,15 +570,9 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
         brain_block = ""
     # Refs policy gating and size budget to avoid unnecessary tokens
     # Default to 'always' so references are visible by default; can be tuned via env
-    refs_policy = os.getenv("JINX_REFS_POLICY", "always").strip().lower()
-    try:
-        refs_min = max(1, int(os.getenv("JINX_REFS_AUTO_MIN", "2")))
-    except Exception:
-        refs_min = 2
-    try:
-        refs_max_chars = max(200, int(os.getenv("JINX_REFS_MAX_CHARS", "1600")))
-    except Exception:
-        refs_max_chars = 1600
+    refs_policy = "always"
+    refs_min = 2
+    refs_max_chars = 1600
 
     def _should_send_refs(codey: bool, count: int) -> bool:
         if refs_policy in ("never", "0", "off", "false", ""):
@@ -637,7 +581,7 @@ async def build_project_context_for(query: str, *, k: int | None = None, max_cha
             return True
         return bool(codey) or (count >= refs_min)
 
-    refs_block = _build_refs_block(refs_parts, policy=refs_policy, refs_min=refs_min, refs_max_chars=refs_max_chars, codey=codey_query)
+    refs_block = _build_refs_block(refs_parts, policy=refs_policy, refs_min=refs_min, refs_max_chars=refs_max_chars, codey=_is_code_like(query or ""))
     graph_block = _build_graph_block(graph_parts)
     mem_block = _build_memory_block(mem_parts)
     final_text = _join_blocks([code_block, brain_block, refs_block, graph_block, mem_block])
@@ -723,10 +667,7 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
             continue
 
     # Parallel snippet building with bounded semaphore
-    try:
-        _SNIP_CONC = max(1, int(os.getenv("EMBED_PROJECT_SNIPPET_CONC", "4")))
-    except Exception:
-        _SNIP_CONC = 4
+    _SNIP_CONC = 4
     sem = asyncio.Semaphore(_SNIP_CONC)
 
     q_join = " ".join(queries)[:512]
@@ -742,14 +683,8 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
         q_join = (q_join + " " + " ".join(s_terms))[:768]
     codey_join = _is_code_like(q_join or "")
     # Brain activation (multi)
-    try:
-        _brain_enable_m = os.getenv("EMBED_BRAIN_ENABLE", "1").strip().lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        _brain_enable_m = True
-    try:
-        _brain_topk_m = max(4, int(os.getenv("EMBED_BRAIN_TOP_K", "12")))
-    except Exception:
-        _brain_topk_m = 12
+    _brain_enable_m = True
+    _brain_topk_m = 12
     brain_pairs_m: list[tuple[str, float]] = []
     if _brain_enable_m:
         try:
@@ -757,21 +692,12 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
         except Exception:
             brain_pairs_m = []
     # Memory retrieval (multi)
-    try:
-        _mem_enable_m = os.getenv("EMBED_AGG_MEM_ENABLE", "1").strip().lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        _mem_enable_m = True
-    try:
-        _mem_k_m = max(1, int(os.getenv("EMBED_AGG_MEM_K", "8")))
-    except Exception:
-        _mem_k_m = 8
+    _mem_enable_m = True
+    _mem_k_m = 8
     mem_task_m: asyncio.Task | None = None
     if _mem_enable_m:
         try:
-            try:
-                _mem_preview_m = max(24, int(os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-            except Exception:
-                _mem_preview_m = 160
+            _mem_preview_m = 160
             mem_task_m = asyncio.create_task(_mem_unified(q_join, k=_mem_k_m, preview_chars=_mem_preview_m))
         except Exception:
             mem_task_m = None
@@ -821,14 +747,8 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
     except Exception:
         pass
     # Adaptive dosing in multi-query builder as well
-    try:
-        _DOSE_BATCH_M = max(1, int(os.getenv("EMBED_PROJECT_DOSE_BATCH", "4")))
-    except Exception:
-        _DOSE_BATCH_M = 4
-    try:
-        _DOSE_MS_M = max(0, int(os.getenv("EMBED_PROJECT_DOSE_MS", "8")))
-    except Exception:
-        _DOSE_MS_M = 8
+    _DOSE_BATCH_M = 4
+    _DOSE_MS_M = 8
 
     approx_len_m = 0
     for fut in asyncio.as_completed(tasks):
@@ -917,9 +837,9 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
                         try:
                             if jx_state.throttle_event.is_set():
                                 async with THROTTLE_LOCK:
-                                    file_text = await read_text_abs_thread(os.path.join(ROOT, file_rel))
+                                    file_text = await read_text_abs_thread(str(Path(ROOT) / file_rel))
                             else:
-                                file_text = await read_text_abs_thread(os.path.join(ROOT, file_rel))
+                                file_text = await read_text_abs_thread(str(Path(ROOT) / file_rel))
                             if file_text:
                                 file_text_cache[file_rel] = file_text
                         except Exception:
@@ -957,16 +877,8 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
                     # Fallback: literal-occurrences refs when no symbol usages were found
                     if not out and (q_join or "").strip():
                         # Literal refs collection tuning via env
-                        try:
-                            _lim_env = os.getenv("JINX_REFS_LIT_LIMIT", "")
-                            _lim = int(_lim_env) if _lim_env.strip() else (6 if _is_code_like(q_join or "") else 3)
-                        except Exception:
-                            _lim = 6 if _is_code_like(q_join or "") else 3
-                        try:
-                            _ms_env = os.getenv("JINX_REFS_LIT_MS", "")
-                            _ms = int(_ms_env) if _ms_env.strip() else (300 if _is_code_like(q_join or "") else 200)
-                        except Exception:
-                            _ms = 300 if _is_code_like(q_join or "") else 200
+                        _lim = 6 if _is_code_like(q_join or "") else 3
+                        _ms = 300 if _is_code_like(q_join or "") else 200
                         def _lit_call():
                             try:
                                 return stage_literal_hits(q_join, _lim, max_time_ms=_ms)
@@ -1017,10 +929,7 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
     mem_parts: List[str] = []
     if _mem_enable_m and mem_task_m is not None:
         try:
-            try:
-                _mem_budget_m = max(200, int(os.getenv("EMBED_AGG_MEM_BUDGET_CHARS", "1200")))
-            except Exception:
-                _mem_budget_m = 1200
+            _mem_budget_m = 1200
             mem_lines_m = await mem_task_m
             if mem_lines_m:
                 acc_m: List[str] = []
@@ -1050,7 +959,7 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
         brain_block = ""
     # Optional brain dump to logs (multi)
     try:
-        dump_on = os.getenv("EMBED_BRAIN_DUMP", "0").strip().lower() not in ("", "0", "false", "off", "no")
+        dump_on = False
         if dump_on:
             await _log_append(BLUE_WHISPERS, "[brain] multi-query dump:")
             for kkey, sc in (brain_pairs_m or [])[:8]:
@@ -1064,15 +973,9 @@ async def build_project_context_multi_for(queries: List[str], *, k: int | None =
     except Exception:
         pass
     # Refs policy gating and size budget (multi-query). Default to 'always' so refs are visible by default.
-    refs_policy = os.getenv("JINX_REFS_POLICY", "always").strip().lower()
-    try:
-        refs_min = max(1, int(os.getenv("JINX_REFS_AUTO_MIN", "2")))
-    except Exception:
-        refs_min = 2
-    try:
-        refs_max_chars = max(200, int(os.getenv("JINX_REFS_MAX_CHARS", "1600")))
-    except Exception:
-        refs_max_chars = 1600
+    refs_policy = "always"
+    refs_min = 2
+    refs_max_chars = 1600
 
     def _should_send_refs_multi(codey: bool, count: int) -> bool:
         if refs_policy in ("never", "0", "off", "false", ""):

@@ -84,8 +84,6 @@ def find_family_for_model(slug: str) -> Optional[ModelFamily]:
         )
     if s.startswith("gpt-4.1"):
         return _make(s, "gpt-4.1", needs_special_apply_patch_instructions=True)
-    if s.startswith("gpt-oss") or s.startswith("openai/gpt-oss"):
-        return _make(s, "gpt-oss", apply_patch_tool_type="function")
     if s.startswith("gpt-4o"):
         return _make(s, "gpt-4o", needs_special_apply_patch_instructions=True)
     if s.startswith("gpt-3.5"):

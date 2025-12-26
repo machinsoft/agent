@@ -69,26 +69,6 @@ class ModelProviderInfo:
         return any(m in base for m in markers)
 
 
-DEFAULT_LMSTUDIO_PORT = 1234
-DEFAULT_OLLAMA_PORT = 11434
-LMSTUDIO_OSS_PROVIDER_ID = "lmstudio"
-OLLAMA_OSS_PROVIDER_ID = "ollama"
-
-
-def create_oss_provider_with_base_url(base_url: str, wire_api: WireApi) -> ModelProviderInfo:
-    return ModelProviderInfo(
-        name="gpt-oss",
-        base_url=base_url,
-        wire_api=wire_api,
-        requires_openai_auth=False,
-    )
-
-
-def create_oss_provider(default_port: int, wire_api: WireApi) -> ModelProviderInfo:
-    base = f"http://localhost:{default_port}/v1"
-    return create_oss_provider_with_base_url(base, wire_api)
-
-
 def built_in_model_providers(auth_mode: Optional[AuthMode]) -> Dict[str, ModelProviderInfo]:
     openai_entry = ModelProviderInfo(
         name="OpenAI",
@@ -100,7 +80,5 @@ def built_in_model_providers(auth_mode: Optional[AuthMode]) -> Dict[str, ModelPr
 
     providers: Dict[str, ModelProviderInfo] = {
         "openai": openai_entry,
-        OLLAMA_OSS_PROVIDER_ID: create_oss_provider(DEFAULT_OLLAMA_PORT, "chat"),
-        LMSTUDIO_OSS_PROVIDER_ID: create_oss_provider(DEFAULT_LMSTUDIO_PORT, "responses"),
     }
     return providers

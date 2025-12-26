@@ -41,6 +41,12 @@ class DedupRegistry:
         self._pending.add(msg_id)
         return True
 
+    def on_unadmit(self, msg_id: str) -> None:
+        if not msg_id:
+            return
+        self._pending.discard(msg_id)
+        self._inflight.discard(msg_id)
+
     def on_scheduled(self, msg_id: str) -> None:
         if not msg_id:
             return

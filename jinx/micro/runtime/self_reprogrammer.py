@@ -9,6 +9,14 @@ from typing import Any, Dict, List, Optional
 from jinx.micro.runtime.program import MicroProgram
 from jinx.micro.runtime.contracts import TASK_REQUEST
 
+_REPROGRAM_BUDGET_MS = 2400
+_SELFUPDATE_TIMEOUT_S = 18.0
+_PLAN_TOPK = 8
+_PLAN_EMBED_MS = 600
+_PLAN_CG_WINDOWS = True
+_PLAN_REFINE_MS = 500
+_VERIFY_SANDBOX = True
+_REPROGRAM_TESTS = True
 
 _JSON_PLAN_EXAMPLE = r"""
 {
@@ -50,23 +58,11 @@ class SelfReprogrammer(MicroProgram):
 
     def __init__(self) -> None:
         super().__init__(name="SelfReprogrammer")
-        try:
-            self._budget_ms = int(os.getenv("JINX_REPROGRAM_BUDGET_MS", "2400"))
-        except Exception:
-            self._budget_ms = 2400
-        try:
-            self._apply_timeout_s = float(os.getenv("JINX_SELFUPDATE_TIMEOUT_S", "18.0"))
-        except Exception:
-            self._apply_timeout_s = 18.0
+        self._budget_ms = _REPROGRAM_BUDGET_MS
+        self._apply_timeout_s = _SELFUPDATE_TIMEOUT_S
         self._sem = asyncio.Semaphore(1)
-        try:
-            self._embed_topk = int(os.getenv("JINX_PLAN_TOPK", "8"))
-        except Exception:
-            self._embed_topk = 8
-        try:
-            self._embed_ms = int(os.getenv("JINX_PLAN_EMBED_MS", "600"))
-        except Exception:
-            self._embed_ms = 600
+        self._embed_topk = _PLAN_TOPK
+        self._embed_ms = _PLAN_EMBED_MS
 
     async def run(self) -> None:
         from jinx.micro.runtime.api import on as _on
@@ -318,7 +314,7 @@ class SelfReprogrammer(MicroProgram):
                 scores.append((rel, float(h.get("score", 0.0) or 0.0)))
                 # Optional: add small callgraph windows for Python symbol at hit line
                 try:
-                    if str(os.getenv("JINX_PLAN_CG_WINDOWS", "1")).lower() not in ("", "0", "false", "off", "no") and rel.endswith(".py") and file_text:
+                    if _PLAN_CG_WINDOWS and rel.endswith(".py") and file_text:
                         from jinx.micro.embeddings.project_py_scope import get_python_symbol_at_line as _sym_at  # type: ignore
                         from jinx.micro.embeddings.project_callgraph import windows_for_symbol as _cg_windows  # type: ignore
                         mid = int((ls + le) // 2)
@@ -402,10 +398,7 @@ class SelfReprogrammer(MicroProgram):
             from jinx.micro.llm.service import spark_openai as _spark
         except Exception:
             return plan
-        try:
-            budget_ms = int(os.getenv("JINX_PLAN_REFINE_MS", "500"))
-        except Exception:
-            budget_ms = 500
+        budget_ms = _PLAN_REFINE_MS
         try:
             js = json.dumps({"patches": [p.__dict__ for p in plan]}, ensure_ascii=False)
         except Exception:
@@ -605,7 +598,7 @@ class SelfReprogrammer(MicroProgram):
             out = [default_path]
         return out
 
-    async def _verify_code_text(self, *, original: str | None = None, new_text_path: str) -> bool:
+    async def _verify_code_text(self, original: Optional[str], new_text_path: str) -> bool:
         try:
             with open(new_text_path, "r", encoding="utf-8") as f:
                 code = f.read()
@@ -646,7 +639,7 @@ class SelfReprogrammer(MicroProgram):
             return False
         # Optional sandbox smoke
         try:
-            if str(os.getenv("JINX_VERIFY_SANDBOX", "1")).lower() not in ("", "0", "false", "off", "no"):
+            if _VERIFY_SANDBOX:
                 from jinx.sandbox.async_runner import run_sandbox
                 await run_sandbox("print('verify-ok')")
         except Exception:
@@ -697,7 +690,7 @@ class SelfReprogrammer(MicroProgram):
         If disabled or on error, returns True. Best-effort within time budget.
         """
         try:
-            if str(os.getenv("JINX_REPROGRAM_TESTS", "1")).lower() in ("", "0", "false", "off", "no"):
+            if not _REPROGRAM_TESTS:
                 return True
             from jinx.micro.llm.service import spark_openai as _spark
         except Exception:

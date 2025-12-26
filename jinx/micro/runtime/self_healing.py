@@ -475,7 +475,63 @@ class SelfHealingSystem:
             
             # Parse traceback
             file_path, line_number, func_name = self._parse_traceback(traceback_str)
-            
+
+            # Decide whether this error is urgent enough to attempt repair immediately
+            et = (error_type or "").strip()
+            em = (error_message or "")
+            tb = (traceback_str or "")
+            urgent = False
+            try:
+                if (
+                    "ModuleNotFoundError" in et
+                    or "ImportError" in et
+                    or "partially initialized module" in em
+                    or "circular import" in em
+                ):
+                    urgent = True
+            except Exception:
+                urgent = False
+
+            # If we couldn't extract a file path, try to recover one from common import-traceback formats.
+            if not file_path:
+                try:
+                    import re as _re
+                    # Most tracebacks include at least one `File "...", line N` entry; pick the last one.
+                    mm = None
+                    for m in _re.finditer(r'File "([^"]+\.py)", line (\d+)', tb):
+                        mm = m
+                    if mm is not None:
+                        file_path = str(mm.group(1) or "").strip() or None
+                        try:
+                            line_number = int(mm.group(2) or 0) or None
+                        except Exception:
+                            line_number = None
+                except Exception:
+                    pass
+
+            # If still no file path, we can still schedule a repair task by module name when possible.
+            if not file_path and urgent:
+                try:
+                    import re as _re
+                    mod = None
+                    # ModuleNotFoundError: No module named 'x.y'
+                    mm = _re.search(r"No module named ['\"]([^'\"]+)['\"]", em)
+                    if mm:
+                        mod = str(mm.group(1) or "").strip() or None
+                    # ImportError: cannot import name 'foo' from partially initialized module 'a.b' ...
+                    if mod is None:
+                        mm2 = _re.search(r"module ['\"]([^'\"]+)['\"]", em)
+                        if mm2:
+                            mod = str(mm2.group(1) or "").strip() or None
+                    if mod and mod.startswith("jinx."):
+                        try:
+                            from jinx.micro.runtime.api import submit_task as _submit
+                            await _submit("repair.import_missing", module=mod)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             if not file_path:
                 return False
             
@@ -499,9 +555,10 @@ class SelfHealingSystem:
             
             # Attempt repair if pattern is frequent or critical
             should_repair = (
-                pattern.frequency >= 2 or
-                'Critical' in error_type or
-                'Fatal' in error_type
+                urgent
+                or pattern.frequency >= 2
+                or 'Critical' in error_type
+                or 'Fatal' in error_type
             ) and not pattern.fix_attempted
             
             if should_repair:
@@ -668,11 +725,66 @@ async def auto_heal_error(
 ) -> bool:
     """Automatically attempt to heal an error."""
     system = await get_healing_system()
-    return await system.process_error(error_type, error_message, traceback_str)
+    healed = await system.process_error(error_type, error_message, traceback_str)
+    
+    # Integrate with self-evolution for learning
+    try:
+        from jinx.micro.runtime.self_evolution import learn, record_attempt
+        
+        if healed:
+            # Learn from successful repair
+            learn(
+                category="success_strategy",
+                description=f"Self-healed {error_type}",
+                context=error_message[:200],
+                solution="auto_heal_error succeeded",
+                confidence=0.7,
+            )
+            record_attempt("goal_c8e7d3a2", True, f"Healed {error_type}")  # Minimize errors goal
+        else:
+            # Learn from failed repair attempt
+            learn(
+                category="error_pattern",
+                description=f"Failed to heal {error_type}",
+                context=traceback_str[:300],
+                confidence=0.4,
+            )
+            record_attempt("goal_c8e7d3a2", False, f"Failed to heal {error_type}")
+    except Exception:
+        pass
+    
+    return healed
+
+
+async def trigger_evolution_healing(error_pattern: str, context: str) -> Optional[str]:
+    """Trigger LLM-based architecture fix when errors persist.
+    
+    Called by self-evolution when local healing fails repeatedly.
+    """
+    try:
+        from jinx.micro.runtime.self_evolution import (
+            propose_architecture_change,
+            propose_modification,
+            get_relevant_learnings,
+        )
+        
+        # Check if we have learned solutions
+        learnings = get_relevant_learnings("error_pattern", error_pattern, limit=3)
+        for learning in learnings:
+            if learning.solution and learning.confidence > 0.6:
+                return learning.solution  # Use known solution
+        
+        # Request LLM analysis for new solution
+        proposal = await propose_architecture_change(error_pattern, context)
+        return proposal
+        
+    except Exception:
+        return None
 
 
 __all__ = [
     "SelfHealingSystem",
     "get_healing_system",
     "auto_heal_error",
+    "trigger_evolution_healing",
 ]

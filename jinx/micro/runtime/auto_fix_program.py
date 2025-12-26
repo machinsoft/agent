@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from typing import Any, Dict, Optional
 
 from jinx.micro.runtime.program import MicroProgram
 from jinx.micro.runtime.contracts import TASK_REQUEST
-from jinx.micro.common.env import truthy
 from jinx.micro.runtime.patch import AutoPatchArgs
 from jinx.micro.runtime.patch.autopatch import autopatch as _autopatch
+
+_AUTOFIX_TRIES = 3
 
 
 def _derive_query(code: str) -> str:
@@ -63,9 +63,9 @@ class AutoFixProgram(MicroProgram):
         query = str(kw.get("query") or "") or None
         tries = 0
         try:
-            tries = int(kw.get("tries") or os.getenv("JINX_AUTOFIX_TRIES", "3"))
+            tries = int(kw.get("tries") or _AUTOFIX_TRIES)
         except Exception:
-            tries = 3
+            tries = _AUTOFIX_TRIES
         tries = max(1, min(6, tries))
         from jinx.micro.runtime.api import report_progress as _report_progress, report_result as _report_result
         await _report_progress(tid, 10.0, "autofix start")

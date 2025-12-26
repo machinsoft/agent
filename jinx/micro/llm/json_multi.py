@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any, Callable, Dict, Optional
 
 from jinx.micro.llm.llm_cache import call_openai_cached
+
+_JSON_MULTI_SAMPLES = 2
+_JSON_MULTI_HEDGE_MS = 0
 
 
 async def call_json_multi_validated(
@@ -22,16 +24,10 @@ async def call_json_multi_validated(
     - If none validate, returns the first successfully parsed dict (even if not validated), else None.
     - Respects global TTL/timeout/concurrency from llm_cache.
     """
-    try:
-        n = max(1, int(os.getenv("JINX_JSON_MULTI_SAMPLES", "2")))
-    except Exception:
-        n = 2
+    n = max(1, int(_JSON_MULTI_SAMPLES))
     temps_base = [0.2, 0.5, 0.8, 0.3]
     temps = temps_base[:max(1, n)]
-    try:
-        hedge_ms = int(os.getenv("JINX_JSON_MULTI_HEDGE_MS", "0"))
-    except Exception:
-        hedge_ms = 0
+    hedge_ms = int(_JSON_MULTI_HEDGE_MS)
 
     extra = dict(base_extra_kwargs or {})
 

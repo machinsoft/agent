@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any, Dict, List
 
 from jinx.micro.embeddings.retrieval import (
@@ -25,10 +24,10 @@ async def collect_pre_evidence(query: str) -> str:
     if not q:
         return ""
     try:
-        kd = int(os.getenv("JINX_CHAINED_PRE_DIALOG_K", "2"))
-        kc = int(os.getenv("JINX_CHAINED_PRE_CODE_K", "2"))
-        td = int(os.getenv("JINX_CHAINED_PRE_DIALOG_MS", "100"))
-        tc = int(os.getenv("JINX_CHAINED_PRE_CODE_MS", "180"))
+        kd = 2
+        kc = 2
+        td = 100
+        tc = 180
         # Continuity: append small hints to stabilize retrieval (optional, RT-safe)
         try:
             from jinx.micro.conversation.cont import load_last_anchors as _load_last_anchors
@@ -83,10 +82,10 @@ async def gather_planner_evidence(subs: List[str]) -> Dict[str, Any]:
     if not subs:
         return out
     # Tight budgets
-    kd = int(os.getenv("JINX_CHAINED_EVID_DIALOG_K", "3"))
-    kc = int(os.getenv("JINX_CHAINED_EVID_CODE_K", "3"))
-    td = int(os.getenv("JINX_CHAINED_EVID_DIALOG_MS", "120"))
-    tc = int(os.getenv("JINX_CHAINED_EVID_CODE_MS", "220"))
+    kd = 3
+    kc = 3
+    td = 120
+    tc = 220
     # Continuity: prepare lightweight shared hints once
     try:
         from jinx.micro.conversation.cont import load_last_anchors as _load_last_anchors

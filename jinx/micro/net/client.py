@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from urllib.parse import urlparse
-from jinx.bootstrap import ensure_optional, package
+from jinx.bootstrap import ensure_optional
 import importlib
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -64,13 +64,19 @@ def get_openai_client() -> Any:
         
         _metrics.creation_time = time.time()
         proxy = _pick_proxy_env()
+
+        # If OpenAI SDK isn't installed, fail fast with a clear error.
+        try:
+            if bool(getattr(openai, "__jinx_optional_missing__", False)):
+                raise RuntimeError("Optional dependency missing: openai")
+        except Exception:
+            raise RuntimeError("Optional dependency missing: openai")
         
         # Configure httpx client with optimized settings
         try:
             httpx = importlib.import_module("httpx")
         except ImportError:
-            package("httpx")
-            httpx = importlib.import_module("httpx")
+            raise RuntimeError("Optional dependency missing: httpx")
         
         # Advanced httpx configuration
         client_config = {
@@ -95,8 +101,7 @@ def get_openai_client() -> Any:
                     try:
                         httpx_socks = importlib.import_module("httpx_socks")
                     except ImportError:
-                        package("httpx-socks")
-                        httpx_socks = importlib.import_module("httpx_socks")
+                        raise RuntimeError("Optional dependency missing: httpx_socks")
                     
                     transport = httpx_socks.SyncProxyTransport.from_url(proxy)
                     client_config["transport"] = transport

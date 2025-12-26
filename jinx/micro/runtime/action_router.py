@@ -11,7 +11,6 @@ Goals:
 from __future__ import annotations
 
 import asyncio
-import os
 import json
 from typing import Any, Dict, Optional
 
@@ -104,21 +103,7 @@ async def auto_route_and_execute(query: str, *, budget_ms: int = 1500) -> Dict[s
             "message": "",
         }
 
-    # Gate: allow disable via env, default ON
-    try:
-        if str(os.getenv("JINX_AUTO_ACTION", "1")).lower() in ("", "0", "false", "off", "no"):
-            return {
-                "executed": False,
-                "reason": "auto_action_disabled",
-                "task_type": None,
-                "confidence": 0.0,
-                "file": None,
-                "rel": None,
-                "patch_success": None,
-                "message": "",
-            }
-    except Exception:
-        pass
+    # Auto action is always enabled for autonomous operation
 
     # Classification via ML orchestrator
     try:
@@ -132,25 +117,17 @@ async def auto_route_and_execute(query: str, *, budget_ms: int = 1500) -> Dict[s
         confidence = 0.0
 
     # Architecture/design tasks: route to API architect micro-program
-    try:
-        arch_conf_min = float(os.getenv("JINX_ARCH_CONF_MIN", "0.55"))
-    except Exception:
-        arch_conf_min = 0.55
+    arch_conf_min = 0.55
     if task_type in _ARCH_TASKS and confidence >= arch_conf_min:
         # Try to synthesize a compact spec; if fail, submit with None (program will default)
         try:
-            try:
-                spec_budget = int(os.getenv("JINX_ARCH_SPEC_MS", "900"))
-            except Exception:
-                spec_budget = 900
-            spec = await _synth_arch_spec(query, budget_ms=max(300, spec_budget))
+            spec = await _synth_arch_spec(query, budget_ms=900)
         except Exception:
             spec = None
         # Submit task to API architect
         try:
             from jinx.micro.runtime.api import submit_task as _submit
-            framework = (os.getenv("JINX_API_ARCH_FRAMEWORK", "fastapi") or "fastapi").strip().lower()
-            await _submit("architect.api", spec=spec, framework=framework, budget_ms=int(os.getenv("JINX_API_ARCH_BUDGET_MS", "1600")))
+            await _submit("architect.api", spec=spec, framework="fastapi", budget_ms=1600)
         except Exception:
             pass
         try:
@@ -174,7 +151,7 @@ async def auto_route_and_execute(query: str, *, budget_ms: int = 1500) -> Dict[s
         # Skill fallback: try to execute a lightweight skill to satisfy the query
         try:
             from jinx.micro.runtime.skills import try_execute as _skill_try
-            s_out = await _skill_try(query, budget_ms=max(300, int(os.getenv("JINX_SKILL_RT_MS", "600"))))
+            s_out = await _skill_try(query, budget_ms=600)
         except Exception:
             s_out = None
         if s_out and s_out.strip():
@@ -227,7 +204,7 @@ async def auto_route_and_execute(query: str, *, budget_ms: int = 1500) -> Dict[s
         # Skill fallback on unresolved file
         try:
             from jinx.micro.runtime.skills import try_execute as _skill_try
-            s_out = await _skill_try(query, budget_ms=max(300, int(os.getenv("JINX_SKILL_RT_MS", "600"))))
+            s_out = await _skill_try(query, budget_ms=600)
         except Exception:
             s_out = None
         if s_out and s_out.strip():

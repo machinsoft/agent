@@ -172,14 +172,44 @@ def start_priority_dispatcher_task(src: "asyncio.Queue[str]", dst: "asyncio.Queu
         seq = 0
         metrics = PriorityMetrics()
         capacity = max(1, int(settings.runtime.queue_maxsize))
-        policy = (settings.runtime.queue_policy or "drop_oldest").strip().lower()
+        policy = (settings.runtime.queue_policy or "block").strip().lower()
         
         # Starvation prevention: track time since last low-priority dispatch
         last_low_priority_dispatch: Dict[int, float] = defaultdict(lambda: loop.time())
         starvation_threshold_s = 30.0  # Boost priority after 30s wait
 
         _running = True
-        active_tasks = []
+        get_task: asyncio.Task[str] | None = None
+        flush_task: asyncio.Task[None] | None = None
+
+        async def _dispatch_one() -> bool:
+            if not heap:
+                return False
+
+            current_time = loop.time()
+            modified = False
+            for i, (pr0, s0, enq_t0, m0) in enumerate(heap):
+                if pr0 >= 2:
+                    wait_time = current_time - enq_t0
+                    if wait_time >= starvation_threshold_s:
+                        heap[i] = (max(0, pr0 - 2), s0, enq_t0, m0)
+                        modified = True
+            if modified:
+                heapq.heapify(heap)
+
+            with _span("priority.dispatch_one"):
+                pr1, s1, enq_t1, item = heapq.heappop(heap)
+                await dst.put(item)
+
+            queue_time_ms = (current_time - enq_t1) * 1000.0
+            metrics.total_processed += 1
+            metrics.avg_queue_time_ms = (
+                (metrics.avg_queue_time_ms * (metrics.total_processed - 1) + queue_time_ms)
+                / metrics.total_processed
+            )
+            metrics.max_queue_time_ms = max(metrics.max_queue_time_ms, queue_time_ms)
+            last_low_priority_dispatch[pr1] = current_time
+            return True
         
         async def _awaitable_src_get() -> str:
             if not _running:
@@ -188,9 +218,6 @@ def start_priority_dispatcher_task(src: "asyncio.Queue[str]", dst: "asyncio.Queu
 
         try:
             while _running:
-                get_task = None
-                flush_task = None
-                
                 try:
                     if not settings.runtime.use_priority_queue:
                         # Fast path: FIFO pass-through with cooperative yield
@@ -202,64 +229,74 @@ def start_priority_dispatcher_task(src: "asyncio.Queue[str]", dst: "asyncio.Queu
                             next_yield = loop.time() + budget
                         continue
 
-                    # Priority mode: race new item vs flush tick
-                    with _span("priority.await_or_flush"):
+                    # Create tasks lazily and keep them until they complete.
+                    if get_task is None:
                         get_task = asyncio.create_task(_awaitable_src_get())
-                        flush_task = asyncio.create_task(asyncio.sleep(0.001))
-                    
-                    try:
+                    if flush_task is None:
+                        flush_task = asyncio.create_task(asyncio.sleep(0.01))
+
+                    with _span("priority.await_or_flush"):
                         done, _ = await asyncio.wait({get_task, flush_task}, return_when=asyncio.FIRST_COMPLETED)
-                    except asyncio.CancelledError:
-                        _running = False
-                        if get_task and not get_task.done():
-                            get_task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await get_task
-                        if flush_task and not flush_task.done():
-                            flush_task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await flush_task
-                        raise
-                except asyncio.CancelledError:
-                    _running = False
-                    break
-                except Exception:
-                    continue
-                
-                # Process results inside the loop
-                if get_task and flush_task and get_task in done:
-                    try:
-                        msg = get_task.result()
-                    except asyncio.CancelledError:
-                        continue
-                    with _span("priority.classify"):
-                        pr = classify_priority(msg)
-                    enqueue_time = loop.time()
-                    # Admission control
-                    admitted = True
-                    if len(heap) >= capacity:
-                        if pr <= 1:
-                            # Try to evict one low-priority item to admit critical/high
-                            evicted = False
-                            if heap:
-                                # Find an index of a low-priority item (pr>=2), prefer oldest by seq
-                                idx = -1
-                                best_s = 10**12
-                                for i, (p0, s0, t0, m0) in enumerate(heap):
-                                    if p0 >= 2 and s0 < best_s:
-                                        best_s = s0
-                                        idx = i
-                                if idx >= 0:
-                                    heap[idx] = heap[-1]
-                                    heap.pop()
-                                    heapq.heapify(heap)
-                                    evicted = True
-                            if not evicted:
-                                # No eviction candidate; apply policy
+
+                    if flush_task in done:
+                        flush_task = None
+
+                    if get_task in done:
+                        try:
+                            msg = get_task.result()
+                        finally:
+                            get_task = None
+                        with _span("priority.classify"):
+                            pr = classify_priority(msg)
+                        enqueue_time = loop.time()
+                        # Admission control
+                        admitted = True
+                        already_pushed = False
+                        if len(heap) >= capacity:
+                            if policy not in ("drop_newest", "drop_oldest"):
+                                heapq.heappush(heap, (pr, seq, enqueue_time, msg))
+                                seq += 1
+                                already_pushed = True
+                                while len(heap) > capacity:
+                                    if not await _dispatch_one():
+                                        await asyncio.sleep(0.001)
+                            elif pr <= 1:
+                                # Try to evict one low-priority item to admit critical/high
+                                evicted = False
+                                if heap:
+                                    idx = -1
+                                    best_s = 10**12
+                                    for i, (p0, s0, t0, m0) in enumerate(heap):
+                                        if p0 >= 2 and s0 < best_s:
+                                            best_s = s0
+                                            idx = i
+                                    if idx >= 0:
+                                        heap[idx] = heap[-1]
+                                        heap.pop()
+                                        heapq.heapify(heap)
+                                        evicted = True
+                                if not evicted:
+                                    if policy == "drop_newest":
+                                        admitted = False
+                                    elif policy == "drop_oldest":
+                                        if heap:
+                                            idx = 0
+                                            best_s = heap[0][1]
+                                            for i in range(1, len(heap)):
+                                                if heap[i][1] < best_s:
+                                                    best_s = heap[i][1]
+                                                    idx = i
+                                            heap[idx] = heap[-1]
+                                            heap.pop()
+                                            heapq.heapify(heap)
+                                        else:
+                                            admitted = False
+                                    else:
+                                        admitted = False
+                            else:
                                 if policy == "drop_newest":
                                     admitted = False
                                 elif policy == "drop_oldest":
-                                    # Drop oldest overall (by seq)
                                     if heap:
                                         idx = 0
                                         best_s = heap[0][1]
@@ -272,128 +309,52 @@ def start_priority_dispatcher_task(src: "asyncio.Queue[str]", dst: "asyncio.Queu
                                         heapq.heapify(heap)
                                     else:
                                         admitted = False
-                                else:  # block
-                                    try:
-                                        await asyncio.sleep(0.001)
-                                    except Exception:
-                                        pass
-                        else:
-                            # Non-critical item; apply policy directly
-                            if policy == "drop_newest":
-                                admitted = False
-                            elif policy == "drop_oldest":
-                                if heap:
-                                    idx = 0
-                                    best_s = heap[0][1]
-                                    for i in range(1, len(heap)):
-                                        if heap[i][1] < best_s:
-                                            best_s = heap[i][1]
-                                            idx = i
-                                    heap[idx] = heap[-1]
-                                    heap.pop()
-                                    heapq.heapify(heap)
                                 else:
                                     admitted = False
-                            else:  # block
-                                try:
-                                    await asyncio.sleep(0.001)
-                                except Exception:
-                                    pass
-                    if admitted:
-                        heapq.heappush(heap, (pr, seq, enqueue_time, msg))
-                        seq += 1
-                    else:
-                        metrics.denied_admissions += 1
-                
-                    # Update metrics
-                    if pr == 0:
-                        metrics.high_priority_count += 1
-                    elif pr == 1:
-                        metrics.normal_priority_count += 1
-                    else:
-                        metrics.low_priority_count += 1
-                    
-                    # Track classification hits
-                    metrics.classification_hits[pr] = metrics.classification_hits.get(pr, 0) + 1
-                
-                # Cancel pending tasks
-                if get_task and not get_task.done():
-                    get_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await get_task
-                if flush_task and not flush_task.done():
-                    flush_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await flush_task
+                        if admitted:
+                            if not already_pushed:
+                                heapq.heappush(heap, (pr, seq, enqueue_time, msg))
+                                seq += 1
+                        else:
+                            metrics.denied_admissions += 1
 
-                if heap:
-                    # Anti-starvation: check if any low-priority item is starving
-                    current_time = loop.time()
-                    
-                    # Rebuild heap with boosted priorities for starving items
-                    modified = False
-                    for i, (pr, s, enq_t, m) in enumerate(heap):
-                        if pr >= 2:  # Low priority
-                            wait_time = current_time - enq_t
-                            if wait_time >= starvation_threshold_s:
-                                # Boost priority to prevent starvation
-                                heap[i] = (max(0, pr - 2), s, enq_t, m)
-                                modified = True
-                    
-                    if modified:
-                        heapq.heapify(heap)
-                    
-                    # Dispatch highest priority item
-                    with _span("priority.dispatch_one"):
-                        pr, s, enq_t, item = heapq.heappop(heap)
-                        await dst.put(item)
-                    
-                    # Update metrics
-                    queue_time_ms = (current_time - enq_t) * 1000.0
-                    metrics.total_processed += 1
-                    metrics.avg_queue_time_ms = (
-                        (metrics.avg_queue_time_ms * (metrics.total_processed - 1) + queue_time_ms)
-                        / metrics.total_processed
-                    )
-                    metrics.max_queue_time_ms = max(metrics.max_queue_time_ms, queue_time_ms)
-                    last_low_priority_dispatch[pr] = current_time
+                        if pr == 0:
+                            metrics.high_priority_count += 1
+                        elif pr == 1:
+                            metrics.normal_priority_count += 1
+                        else:
+                            metrics.low_priority_count += 1
+                        metrics.classification_hits[pr] = metrics.classification_hits.get(pr, 0) + 1
 
-                if loop.time() >= next_yield:
-                    await asyncio.sleep(0)
-                    next_yield = loop.time() + budget
-                    
-                    # Periodically log metrics (every ~1000 messages)
-                    if metrics.total_processed % 1000 == 0 and metrics.total_processed > 0:
-                        try:
-                            from jinx.logging_service import bomb_log
-                            await bomb_log(
-                                f"Priority queue metrics: processed={metrics.total_processed}, "
-                                f"avg_wait={metrics.avg_queue_time_ms:.1f}ms, "
-                                f"max_wait={metrics.max_queue_time_ms:.1f}ms, "
-                                f"denied={metrics.denied_admissions}"
-                            )
-                        except Exception:
-                            pass
+                    await _dispatch_one()
+
+                    if loop.time() >= next_yield:
+                        await asyncio.sleep(0)
+                        next_yield = loop.time() + budget
+                except asyncio.CancelledError:
+                    _running = False
+                    break
+                except Exception:
+                    continue
         finally:
             # Ensure all tasks are cleaned up
-            pass
+            _running = False
+            if get_task is not None and not get_task.done():
+                get_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await get_task
+            if flush_task is not None and not flush_task.done():
+                flush_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await flush_task
 
     async def _run_with_cleanup():
         """Wrapper to ensure cleanup on cancellation."""
-        pending_tasks = []
         try:
             await _run()
         except asyncio.CancelledError:
-            # Collect any pending tasks created by _run
-            current_loop = asyncio.get_running_loop()
-            pending_tasks = [t for t in asyncio.all_tasks(current_loop) 
-                           if not t.done() and t != asyncio.current_task()]
-        finally:
-            # Cancel and await all pending tasks
-            for task in pending_tasks:
-                if not task.done():
-                    task.cancel()
-            if pending_tasks:
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            # Do not cancel unrelated tasks in the event loop.
+            # The dispatcher is expected to be safely cancellable by itself.
+            return
     
     return asyncio.create_task(_run_with_cleanup(), name="priority-dispatcher-service")

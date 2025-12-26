@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import os
 from typing import Any, Dict, List, Optional
 
 from jinx.micro.llm.chain_utils import truthy_env
@@ -50,11 +49,13 @@ async def _enhance_with_brain_systems(user_text: str) -> Optional[str]:
     
     # Try to use query expansion from brain
     expanded = None
-    if os.getenv('JINX_BRAIN_ENHANCE_PLANNER', '1') in ('1', 'true', 'on'):
+    try:
         from jinx.micro.brain import expand_query
         expanded_result = await expand_query(user_text)
         if expanded_result and expanded_result.confidence > 0.6:
             expanded = expanded_result.expanded
+    except Exception:
+        expanded = None
     
     return expanded
 
@@ -62,10 +63,10 @@ async def _enhance_with_brain_systems(user_text: str) -> Optional[str]:
 async def _ml_enhance_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     """Enhance plan with ML intelligence."""
     # Use brain systems to score and optimize subqueries
-    if os.getenv('JINX_BRAIN_ML_ENHANCE', '1') not in ('1', 'true', 'on'):
+    try:
+        from jinx.micro.brain import get_adaptive_manager
+    except Exception:
         return plan
-    
-    from jinx.micro.brain import get_adaptive_manager
     
     # Optimize retrieval parameters based on query complexity
     mgr = await get_adaptive_manager()
@@ -77,8 +78,11 @@ async def _ml_enhance_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             'subquery_count': len(sub_queries),
             'plan_complexity': len(str(plan))
         }
-        k, timeout = await mgr.select_params('planner', context)
-        plan['ml_params'] = {'k': k, 'timeout_ms': timeout}
+        try:
+            k, timeout = await mgr.select_params('planner', context)
+            plan['ml_params'] = {'k': k, 'timeout_ms': timeout}
+        except Exception:
+            pass
     
     return plan
 
@@ -95,7 +99,6 @@ async def build_planner_context(user_text: str) -> str:
         await trace_plan({"phase": "gate", "allowed": False})
         return ""
     await trace_plan({"phase": "gate", "allowed": True})
-    advisory = truthy_env("JINX_CHAINED_ADVISORY", "1")
     # Resilience gate: honor temporary disable windows
     try:
         allowed = await allow_execution()
@@ -113,25 +116,23 @@ async def build_planner_context(user_text: str) -> str:
         # Build brain/cortex/warnings from last plan
         parts: List[str] = []
         warns: List[str] = []
-        if not advisory:
-            try:
-                _, warns = validate_plan(last)
-            except Exception:
-                warns = []
         try:
-            brain = render_plan_guidance(last) if advisory else render_plan_brain(last)
+            _, warns = validate_plan(last)
+        except Exception:
+            warns = []
+        try:
+            brain = render_plan_brain(last)
             if brain:
                 parts.append(brain)
         except Exception:
             pass
         try:
-            if truthy_env("JINX_CHAINED_INCLUDE_CORTEX", "1"):
-                cortex_block = render_plan_cortex(last)
-                if cortex_block:
-                    parts.append(cortex_block)
+            cortex_block = render_plan_cortex(last)
+            if cortex_block:
+                parts.append(cortex_block)
         except Exception:
             pass
-        if (not advisory) and warns and truthy_env("JINX_CHAINED_INCLUDE_WARNINGS", "1"):
+        if warns:
             try:
                 parts.append(render_plan_warnings(warns))
             except Exception:
@@ -142,11 +143,10 @@ async def build_planner_context(user_text: str) -> str:
     plan = await run_planner(user_text)
     # Validate structural quality and render optional warnings block
     warns: List[str] = []
-    if not advisory:
-        try:
-            plan, warns = validate_plan(plan)
-        except Exception:
-            warns = []
+    try:
+        plan, warns = validate_plan(plan)
+    except Exception:
+        warns = []
     # If the plan is effectively empty, attempt to fallback to last known good plan
     try:
         is_empty = not (str(plan.get("goal") or "").strip() or (plan.get("plan") or []) or (plan.get("sub_queries") or []) or (plan.get("risks") or []) or str(plan.get("note") or "").strip())
@@ -166,29 +166,23 @@ async def build_planner_context(user_text: str) -> str:
             except Exception:
                 pass
     subs: List[str] = plan.get("sub_queries") or []
-    if advisory and truthy_env("JINX_CHAINED_CLARIFY_AS_SUBS", "1"):
-        try:
-            subs = subs + [str(x).strip() for x in (plan.get("clarifiers") or []) if str(x).strip()]
-        except Exception:
-            pass
     if not subs:
         # Even without subs, return the brain/warnings blocks if present
         parts: List[str] = []
         try:
-            brain = render_plan_guidance(plan) if advisory else render_plan_brain(plan)
+            brain = render_plan_brain(plan)
             if brain:
                 parts.append(brain)
         except Exception:
             pass
         # Optional plan cortex block (persona hints, ignored by downstream if unknown)
         try:
-            if truthy_env("JINX_CHAINED_INCLUDE_CORTEX", "1"):
-                cortex_block = render_plan_cortex(plan)
-                if cortex_block:
-                    parts.append(cortex_block)
+            cortex_block = render_plan_cortex(plan)
+            if cortex_block:
+                parts.append(cortex_block)
         except Exception:
             pass
-        if warns and truthy_env("JINX_CHAINED_INCLUDE_WARNINGS", "1"):
+        if warns:
             try:
                 parts.append(render_plan_warnings(warns))
             except Exception:
@@ -198,8 +192,8 @@ async def build_planner_context(user_text: str) -> str:
         return final_ctx
 
     # Tight budgets for extra retrieval
-    dialog_ms = int(os.getenv("JINX_CHAINED_DIALOG_CTX_MS", "140"))
-    proj_ms = int(os.getenv("JINX_CHAINED_PROJECT_CTX_MS", "500"))
+    dialog_ms = 140
+    proj_ms = 500
 
     parts: List[str] = await gather_context_for_subs(subs, dialog_ms, proj_ms)
     # If planner provided reusable helper kernels, include them for the main brain

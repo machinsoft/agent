@@ -74,10 +74,7 @@ def bandit_order_for_context(ctx: str, strategies: List[str]) -> List[str]:
     metrics = _load_metrics()
     sdata = data.get(ctx) or {}
     now = _now()
-    try:
-        hl = float(os.getenv("JINX_AUTOPATCH_BANDIT_HALF_SEC", "1800"))
-    except Exception:
-        hl = 1800.0
+    hl = 1800.0
     out: List[Tuple[float, str]] = []
     # Global trial count for exploration term
     total_trials = 1.0
@@ -148,10 +145,7 @@ def bandit_update(ctx: str, strategy: str, success: bool) -> None:
     sdata = data.setdefault(ctx, {})
     ent = sdata.get(strategy) or {"succ": 0.0, "fail": 0.0, "ts": now}
     # Decay existing counts to avoid stale history domination
-    try:
-        hl = float(os.getenv("JINX_AUTOPATCH_BANDIT_HALF_SEC", "1800"))
-    except Exception:
-        hl = 1800.0
+    hl = 1800.0
     ent["succ"] = _decay(float(ent.get("succ", 0.0)), float(ent.get("ts", now)), hl)
     ent["fail"] = _decay(float(ent.get("fail", 0.0)), float(ent.get("ts", now)), hl)
     if success:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from typing import Any, Awaitable, Callable, Optional
 
 from .bus import get_bus
@@ -35,14 +34,9 @@ async def ensure_runtime() -> None:
     global _prewarmed_openai
     if not _prewarmed_openai:
         try:
-            on = str(os.getenv("JINX_OPENAI_PREWARM", "1")).lower() not in ("", "0", "false", "off", "no")
+            _prewarm_openai()
         except Exception:
-            on = True
-        if on:
-            try:
-                _prewarm_openai()
-            except Exception:
-                pass
+            pass
         _prewarmed_openai = True
     # Start bridge once
     if not _bridge_started:
@@ -71,115 +65,60 @@ async def ensure_runtime() -> None:
             _bg_tasks.append(t2)
         except Exception:
             pass
-        # Background symbol indexer (env-gated, default ON)
         try:
-            if str(os.getenv("JINX_SYMBOL_INDEX_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.embeddings.symbol_indexer import start_symbol_indexer_task as _start_symidx  # local import to avoid cycles
-                    t3 = _start_symidx()
-                    _bg_tasks.append(t3)
-                except Exception:
-                    pass
+            from jinx.micro.embeddings.symbol_indexer import start_symbol_indexer_task as _start_symidx  # local import to avoid cycles
+            t3 = _start_symidx()
+            _bg_tasks.append(t3)
         except Exception:
             pass
-        # Auto-fix program (env-gated, default ON)
         try:
-            if str(os.getenv("JINX_AUTOFIX_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.auto_fix_program import spawn_autofix as _spawn_autofix  # local import to avoid cycles
-                    await _spawn_autofix()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.auto_fix_program import spawn_autofix as _spawn_autofix  # local import to avoid cycles
+            await _spawn_autofix()
         except Exception:
             pass
-        # Auto-Evolve program (env-gated, default ON) — Wolverine-like self-repair and self-improve
         try:
-            if str(os.getenv("JINX_AUTO_EVOLVE_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.auto_evolve_program import spawn_auto_evolve as _spawn_ae  # local import to avoid cycles
-                    await _spawn_ae()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.auto_evolve_program import spawn_auto_evolve as _spawn_ae  # local import to avoid cycles
+            await _spawn_ae()
         except Exception:
             pass
-        # Skill Acquirer (env-gated, default ON) — acquire missing capabilities automatically
         try:
-            if str(os.getenv("JINX_SKILL_ACQUIRE_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.skill_acquirer import spawn_skill_acquirer as _spawn_sa  # local import
-                    await _spawn_sa()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.skill_acquirer import spawn_skill_acquirer as _spawn_sa  # local import
+            await _spawn_sa()
         except Exception:
             pass
-        # State Compiler (env-gated, default ON) — maintains goals/plan/gaps on the board
         try:
-            if str(os.getenv("JINX_STATE_COMPILER_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.state_compiler_program import spawn_state_compiler as _spawn_sc  # local import
-                    await _spawn_sc()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.state_compiler_program import spawn_state_compiler as _spawn_sc  # local import
+            await _spawn_sc()
         except Exception:
             pass
-        # Repair program (env-gated, default ON)
         try:
-            if str(os.getenv("JINX_REPAIR_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.repair_program import spawn_repair as _spawn_repair  # local import
-                    await _spawn_repair()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.repair_program import spawn_repair as _spawn_repair  # local import
+            await _spawn_repair()
         except Exception:
             pass
-        # API Architect program (env-gated, default ON)
         try:
-            if str(os.getenv("JINX_API_ARCHITECT_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.programs.api_architect import spawn_api_architect as _spawn_arch
-                    await _spawn_arch()
-                except Exception:
-                    pass
+            from jinx.micro.programs.api_architect import spawn_api_architect as _spawn_arch
+            await _spawn_arch()
         except Exception:
             pass
-        # Quality Scanner (env-gated, default ON) — OpenAI-driven code audit + static checks
         try:
-            if str(os.getenv("JINX_QUALITY_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.programs.quality_scanner import spawn_quality_scanner as _spawn_qs
-                    await _spawn_qs()
-                except Exception:
-                    pass
+            from jinx.micro.programs.quality_scanner import spawn_quality_scanner as _spawn_qs
+            await _spawn_qs()
         except Exception:
             pass
-        # Mission Planner (env-gated, default ON) — fully autonomous planner without user prompts
         try:
-            if str(os.getenv("JINX_MISSION_PLANNER_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.programs.mission_planner import spawn_mission_planner as _spawn_mp
-                    await _spawn_mp()
-                except Exception:
-                    pass
+            from jinx.micro.programs.mission_planner import spawn_mission_planner as _spawn_mp
+            await _spawn_mp()
         except Exception:
             pass
-        # Self-Update Manager (env-gated, default ON)
         try:
-            if str(os.getenv("JINX_SELF_UPDATE_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.self_update_manager import spawn_self_update_manager as _spawn_su
-                    await _spawn_su()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.self_update_manager import spawn_self_update_manager as _spawn_su
+            await _spawn_su()
         except Exception:
             pass
-        # Self-Reprogrammer (env-gated, default ON) — prepares staged code and triggers blue-green swap
         try:
-            if str(os.getenv("JINX_SELF_REPROGRAM_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    from jinx.micro.runtime.self_reprogrammer import spawn_self_reprogrammer as _spawn_sr  # local import
-                    await _spawn_sr()
-                except Exception:
-                    pass
+            from jinx.micro.runtime.self_reprogrammer import spawn_self_reprogrammer as _spawn_sr  # local import
+            await _spawn_sr()
         except Exception:
             pass
         _selfstudy_started = True

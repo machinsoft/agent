@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from typing import List
-import os
+
+_CHAINED_MEMORY_ON = True
+_CHAINED_MEMORY_K = 8
+_CHAINED_MEMGRAPH_ON = True
+_CHAINED_MEMGRAPH_K = 6
 
 
 async def gather_context_for_subs(subs: List[str], dialog_ms: int, proj_ms: int) -> List[str]:
@@ -43,16 +47,10 @@ async def gather_context_for_subs(subs: List[str], dialog_ms: int, proj_ms: int)
         except Exception:
             pctx = ""
         # Memory context (ranked lines)
-        try:
-            mem_on = str(os.getenv("JINX_CHAINED_MEMORY", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            mem_on = True
+        mem_on = _CHAINED_MEMORY_ON
         mctx = ""
         if mem_on:
-            try:
-                mk = int(os.getenv("JINX_CHAINED_MEMORY_K", "8"))
-            except Exception:
-                mk = 8
+            mk = _CHAINED_MEMORY_K
             try:
                 lines = await _rank_mem(q, scope="any", k=max(1, mk), preview_chars=180)
                 if lines:
@@ -61,16 +59,10 @@ async def gather_context_for_subs(subs: List[str], dialog_ms: int, proj_ms: int)
             except Exception:
                 mctx = ""
         # Memory graph neighbors
-        try:
-            g_on = str(os.getenv("JINX_CHAINED_MEMGRAPH", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            g_on = True
+        g_on = _CHAINED_MEMGRAPH_ON
         gctx = ""
         if g_on:
-            try:
-                gk = int(os.getenv("JINX_CHAINED_MEMGRAPH_K", "6"))
-            except Exception:
-                gk = 6
+            gk = _CHAINED_MEMGRAPH_K
             try:
                 items = await _qg(q, k=max(1, gk))
                 if items:

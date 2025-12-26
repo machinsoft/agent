@@ -9,6 +9,8 @@ from typing import Any, Dict
 from jinx.log_paths import CHAIN_STATE
 
 _DEFAULT_DISABLE_MS = 60_000  # 1 minute
+_FAIL_THRESHOLD = 3
+_DISABLE_MS = _DEFAULT_DISABLE_MS
 
 
 async def _read_state() -> Dict[str, Any]:
@@ -67,12 +69,7 @@ async def record_success() -> None:
 
 
 async def record_failure(kind: str, *, now_ms: int | None = None) -> None:
-    """Record a failure and possibly set a temporary disable window.
-
-    Env controls:
-    - JINX_CHAINED_FAIL_THRESHOLD (default 3)
-    - JINX_CHAINED_DISABLE_MS (default 60000)
-    """
+    """Record a failure and possibly set a temporary disable window."""
     st = await _read_state()
     if not isinstance(st, dict):
         st = {}
@@ -86,20 +83,9 @@ async def record_failure(kind: str, *, now_ms: int | None = None) -> None:
     kinds = st.get("kinds") or {}
     kinds[kind] = int(kinds.get(kind) or 0) + 1
     st["kinds"] = kinds
-    # Threshold logic
-    try:
-        import os as _os
-        thr = max(1, int(_os.getenv("JINX_CHAINED_FAIL_THRESHOLD", "3")))
-    except Exception:
-        thr = 3
-    try:
-        import os as _os
-        disable_ms = max(10_000, int(_os.getenv("JINX_CHAINED_DISABLE_MS", str(_DEFAULT_DISABLE_MS))))
-    except Exception:
-        disable_ms = _DEFAULT_DISABLE_MS
-    if fc >= thr:
+    if fc >= _FAIL_THRESHOLD:
         now = int(now_ms or time.time() * 1000)
-        st["disable_until_ms"] = now + disable_ms
+        st["disable_until_ms"] = now + _DISABLE_MS
         # Reset counter after disabling to allow recovery on next window
         st["fail_count"] = 0
     await _write_state(st)

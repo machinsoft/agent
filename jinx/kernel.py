@@ -22,15 +22,18 @@ def boot() -> None:
 
     # 2) Load .env early so downstream imports see env
     try:
-        from jinx.bootstrap import load_env
-        load_env()
+        pass
+    except Exception:
+        pass
+    try:
+        from jinx.micro.runtime.startup_checks import run_startup_checks as _startup_checks
+        _startup_checks(stage="pre")
     except Exception:
         pass
 
     # 3) Apply autonomous defaults (env-based, synchronous)
     try:
-        from jinx.micro.runtime.autoconfig import apply_auto_defaults as _auto
-        _auto(None)
+        pass
     except Exception:
         pass
 

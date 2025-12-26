@@ -12,7 +12,7 @@ import importlib
 import os
 import time
 import contextlib
-from jinx.bootstrap import ensure_optional
+import sys
 from jinx.micro.runtime.msg_id import ensure_message_id as _ensure_id
 from typing import Any, cast
 from jinx.logging_service import blast_mem, bomb_log
@@ -23,12 +23,15 @@ from jinx.micro.ui.spinner_util import format_activity_detail, parse_env_bool, p
 from jinx.micro.rt.backpressure import set_throttle_ttl
 
 
-# Ensure prompt_toolkit is present at import time to avoid installing in an active event loop
-ensure_optional(["prompt_toolkit"])  # installs if missing
+
 
 
 async def _simple_input_loop(qe: asyncio.Queue[str]) -> None:
     """Simple input loop fallback for Windows PowerShell when prompt_toolkit fails."""
+    try:
+        jx_state.ui_prompt_toolkit = False
+    except Exception:
+        pass
     print("\nJinx ready (simple input mode)")
     print("Type your requests and press Enter\n")
     
@@ -41,7 +44,25 @@ async def _simple_input_loop(qe: asyncio.Queue[str]) -> None:
             # Get input from user
             try:
                 loop = asyncio.get_running_loop()
-                user_input = await loop.run_in_executor(None, lambda: input("> "))
+                # Prevent spinner from overwriting the user's typing
+                try:
+                    jx_state.ui_input_active = True
+                except Exception:
+                    pass
+                try:
+                    # Best-effort: clear any in-place spinner line before showing prompt
+                    try:
+                        import sys as _sys
+                        _sys.stdout.write("\r" + (" " * 140) + "\r")
+                        _sys.stdout.flush()
+                    except Exception:
+                        pass
+                    user_input = await loop.run_in_executor(None, lambda: input("> "))
+                finally:
+                    try:
+                        jx_state.ui_input_active = False
+                    except Exception:
+                        pass
                 
                 if user_input.strip():
                     # Try to log, but don't fail if logging fails
@@ -85,6 +106,23 @@ async def neon_input(qe: asyncio.Queue[str]) -> None:
     qe : asyncio.Queue[str]
         Target queue for sanitized user input.
     """
+    try:
+        if str(os.getenv("JINX_STARTUP_VALIDATE", "0")).strip().lower() not in ("", "0", "false", "off", "no"):
+            while not jx_state.shutdown_event.is_set():
+                await asyncio.sleep(0.2)
+            return
+    except Exception:
+        pass
+    try:
+        force_simple = str(os.getenv("JINX_FORCE_SIMPLE_INPUT", "0")).strip().lower() not in ("", "0", "false", "off", "no")
+    except Exception:
+        force_simple = False
+    if force_simple:
+        try:
+            jx_state.ui_prompt_toolkit = False
+        except Exception:
+            pass
+        return await _simple_input_loop(qe)
     # Try to use prompt_toolkit, fallback to simple input if fails
     use_prompt_toolkit = True
     PromptSession = None
@@ -113,6 +151,10 @@ async def neon_input(qe: asyncio.Queue[str]) -> None:
     
     if not use_prompt_toolkit or PromptSession is None:
         # Simple input fallback для Windows PowerShell
+        try:
+            jx_state.ui_prompt_toolkit = False
+        except Exception:
+            pass
         return await _simple_input_loop(qe)
 
     # Try to create session - if this fails, use simple input
@@ -147,7 +189,15 @@ async def neon_input(qe: asyncio.Queue[str]) -> None:
         sess = PromptSession(key_bindings=finger_wire, bottom_toolbar=_toolbar)
     except Exception as e:
         # PromptSession failed - use simple fallback
+        try:
+            jx_state.ui_prompt_toolkit = False
+        except Exception:
+            pass
         return await _simple_input_loop(qe)
+    try:
+        jx_state.ui_prompt_toolkit = True
+    except Exception:
+        pass
     boom_clock: dict[str, float] = {"time": asyncio.get_running_loop().time()}
     activity = asyncio.Event()
     # Gate to emit <no_response> only once per inactivity period (until next activity)
@@ -209,10 +259,8 @@ async def neon_input(qe: asyncio.Queue[str]) -> None:
                 if not noresp_sent["v"]:
                     await blast_mem("<no_response>")
                     await bomb_log("<no_response>", TRIGGER_ECHOES)
-                    # Do not disrupt FIFO order: emit only if queue has space
-                    placed = try_put_nowait(qe, "<no_response>")
-                    if not placed:
-                        await bomb_log("<no_response> skipped: input queue saturated", BLUE_WHISPERS)
+                    # Do not enqueue <no_response> into the main conversation pipeline.
+                    # It is an internal signal only; enqueuing can cause infinite auto-replies.
                     noresp_sent["v"] = True
                     boom_clock["time"] = asyncio.get_running_loop().time()
                 else:

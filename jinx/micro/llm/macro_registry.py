@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
@@ -27,7 +26,7 @@ class MacroContext:
     input_text: str = ""
 
     def env(self, name: str, default: str = "") -> str:
-        return os.getenv(name, default)
+        return default
 
 
 _Handler = Callable[[List[str], MacroContext], Awaitable[str]]
@@ -94,11 +93,7 @@ async def expand_dynamic_macros(text: str, ctx: MacroContext, *, max_expansions:
             uniq_keys.append(key)
 
     # 4) Run handlers concurrently under a small semaphore
-    try:
-        conc = max(1, int(os.getenv("JINX_PROMPT_MACRO_CONC", "4")))
-    except Exception:
-        conc = 4
-    sem = asyncio.Semaphore(conc)
+    sem = asyncio.Semaphore(4)
 
     results: Dict[Tuple[str, Tuple[str, ...]], str] = {}
 
@@ -113,11 +108,8 @@ async def expand_dynamic_macros(text: str, ctx: MacroContext, *, max_expansions:
             results[(ns, args)] = val or ""
         except Exception as e:
             results[(ns, args)] = ""
-            if _append and os.getenv("JINX_PROMPT_MACRO_TRACE", "").lower() not in ("", "0", "false", "off", "no"):
-                try:
-                    await _append(BLUE_WHISPERS, f"[MACRO:{ns}] error: {e}")
-                except Exception:
-                    pass
+            if _append:
+                return
 
     await asyncio.gather(*[asyncio.create_task(_run_one(ns, args)) for ns, args in uniq_keys])
 

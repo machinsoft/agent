@@ -10,6 +10,25 @@ from jinx.micro.common.cache import LruCache
 mods = ensure_optional(["tiktoken"])  # installs if missing
 _tiktoken = mods["tiktoken"]
 
+
+class _FallbackEncoding:
+    def encode(self, text: str, allowed_special=()):
+        # Simple, deterministic fallback: unicode codepoints.
+        return [ord(ch) for ch in (text or "")]
+
+    def decode(self, tokens: list[int]):
+        try:
+            return "".join(chr(int(t)) for t in tokens)
+        except Exception:
+            return ""
+
+
+def _tiktoken_missing() -> bool:
+    try:
+        return bool(getattr(_tiktoken, "__jinx_optional_missing__", False))
+    except Exception:
+        return True
+
 __all__ = [
     "EncodingKind",
     "Tokenizer",
@@ -27,11 +46,15 @@ _MODEL_CACHE: LruCache[str, Any] = LruCache(64)
 
 
 def _encoding_for_kind(kind: str):
+    if _tiktoken_missing():
+        return _FallbackEncoding()
     name = EncodingKind.O200K_BASE if kind == EncodingKind.O200K_BASE else EncodingKind.CL100K_BASE
     return _tiktoken.get_encoding(name)
 
 
 def _encoding_for_model(model: str):
+    if _tiktoken_missing():
+        return _FallbackEncoding()
     try:
         return _tiktoken.encoding_for_model(model)
     except Exception:

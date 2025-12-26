@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from jinx.micro.runtime.plugins import register_plugin, subscribe_event
 from jinx.micro.runtime.resource_locator_plugin import (
     register_resource_locator_plugin as _register_resource_locator_plugin,
+)
+from jinx.micro.runtime.event_synthesis_plugin import (
+    register_event_synthesis_plugin as _register_event_synthesis_plugin,
 )
 from jinx.logger.file_logger import append_line as _append
 from jinx.log_paths import BLUE_WHISPERS
@@ -21,7 +23,7 @@ def register_builtin_plugins() -> None:
 
     async def _telemetry_start(ctx) -> None:  # type: ignore[no-redef]
         # local semaphore to avoid log storm
-        sem = asyncio.Semaphore(int(os.getenv("JINX_TELEMETRY_CONC", "4")))
+        sem = asyncio.Semaphore(4)
 
         async def _log(topic: str, payload: Any) -> None:
             async with sem:
@@ -58,7 +60,7 @@ def register_builtin_plugins() -> None:
         import asyncio
         from typing import Any
 
-        sem = asyncio.Semaphore(int(os.getenv("JINX_PREFETCH_CONC", "2")))
+        sem = asyncio.Semaphore(2)
 
         async def _do_prefetch(q: str) -> None:
             if not (q or "").strip():
@@ -68,14 +70,8 @@ def register_builtin_plugins() -> None:
                     from jinx.micro.runtime.prefetch_broker import prefetch_project_ctx, prefetch_base_ctx
                 except Exception:
                     return
-                try:
-                    proj_ms = int(os.getenv("JINX_PREFETCH_PROJECT_MS", "260"))
-                except Exception:
-                    proj_ms = 260
-                try:
-                    base_ms = int(os.getenv("JINX_PREFETCH_DIALOG_MS", "120"))
-                except Exception:
-                    base_ms = 120
+                proj_ms = 260
+                base_ms = 120
                 await asyncio.gather(
                     prefetch_project_ctx(q, max_time_ms=proj_ms),
                     prefetch_base_ctx(q, max_time_ms=base_ms),
@@ -112,6 +108,321 @@ def register_builtin_plugins() -> None:
         features={"prefetch"},
     )
 
+    _register_event_synthesis_plugin()
+
+    # AutoBrain: Intelligent autonomous configuration system
+    async def _autobrain_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.autobrain_config import start_optimization_task, self_repair_check
+            # Run initial self-repair check
+            repairs = self_repair_check()
+            if repairs:
+                try:
+                    from jinx.micro.ui.output import pretty_echo_async
+                    await pretty_echo_async(
+                        f"<autobrain_init>\nSelf-repair: {len(repairs)} fixes applied\n</autobrain_init>",
+                        title="AutoBrain"
+                    )
+                except Exception:
+                    pass
+            # Start background optimization loop
+            start_optimization_task()
+        except Exception:
+            pass
+
+    async def _autobrain_stop(ctx) -> None:  # type: ignore[no-redef]
+        return None
+
+    register_plugin(
+        "autobrain",
+        start=_autobrain_start,
+        stop=_autobrain_stop,
+        enabled=True,  # always enabled - core autonomous intelligence
+        priority=5,  # high priority - start early
+        version="1.0.0",
+        deps=[],
+        features={"autobrain", "autonomous", "self-tuning"},
+    )
+
+    # Architectural Memory: persistent task tracking and context
+    async def _arch_memory_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.arch_memory import (
+                get_memory_summary,
+                cleanup_old_tasks,
+                get_pending_tasks,
+            )
+            # Initial cleanup of old tasks
+            removed = await cleanup_old_tasks(max_age_hours=48.0)
+            
+            # Log summary
+            summary = get_memory_summary()
+            pending = get_pending_tasks()
+            
+            if pending or summary.get("tasks", {}).get("in_progress", 0) > 0:
+                try:
+                    from jinx.micro.ui.output import pretty_echo_async
+                    await pretty_echo_async(
+                        f"<arch_memory>\nResuming: {len(pending)} pending tasks, "
+                        f"{summary.get('tasks', {}).get('in_progress', 0)} in progress\n</arch_memory>",
+                        title="ArchMemory"
+                    )
+                except Exception:
+                    pass
+            
+            # Start periodic cleanup task
+            import asyncio
+            async def _periodic_cleanup():
+                while True:
+                    await asyncio.sleep(3600)  # Every hour
+                    try:
+                        await cleanup_old_tasks(max_age_hours=24.0)
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_periodic_cleanup(), name="arch-memory-cleanup")
+        except Exception:
+            pass
+
+    async def _arch_memory_stop(ctx) -> None:  # type: ignore[no-redef]
+        return None
+
+    register_plugin(
+        "arch_memory",
+        start=_arch_memory_start,
+        stop=_arch_memory_stop,
+        enabled=True,  # always enabled - core memory system
+        priority=6,  # after autobrain
+        version="1.0.0",
+        deps=["autobrain"],
+        features={"arch_memory", "task_tracking", "context_persistence"},
+    )
+
+    # Self-Evolution Engine: goal-driven self-improvement
+    async def _evolution_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.self_evolution import (
+                initialize_system_goals,
+                run_evolution_cycle,
+                get_evolution_summary,
+            )
+            
+            # Initialize system goals (self-improvement, user success, etc.)
+            initialize_system_goals()
+            
+            # Start periodic evolution cycle (every 10 minutes, minimal LLM usage)
+            import asyncio
+            async def _evolution_loop():
+                while True:
+                    await asyncio.sleep(600)  # 10 minutes
+                    try:
+                        results = await run_evolution_cycle()
+                        
+                        # Apply learning confidence decay
+                        try:
+                            from jinx.micro.runtime.self_evolution import (
+                                decay_learning_confidence,
+                                prune_low_confidence_learnings,
+                                auto_create_suggested_goals,
+                            )
+                            decayed = decay_learning_confidence()
+                            pruned = prune_low_confidence_learnings()
+                            new_goals = auto_create_suggested_goals()
+                        except Exception:
+                            decayed = pruned = 0
+                            new_goals = []
+                        
+                        if results.get("llm_called") or new_goals:
+                            try:
+                                from jinx.micro.ui.output import pretty_echo_async
+                                msg = f"<evolution>\nAnalyzed {results.get('analyzed_goals', 0)} goals"
+                                if new_goals:
+                                    msg += f", suggested {len(new_goals)} new goals"
+                                if decayed:
+                                    msg += f", decayed {decayed} learnings"
+                                msg += "\n</evolution>"
+                                await pretty_echo_async(msg, title="Evolution")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_evolution_loop(), name="self-evolution")
+            
+            # Log brain status on startup
+            try:
+                from jinx.micro.runtime.brain import brain_check
+                from jinx.micro.ui.output import pretty_echo_async
+                status_line = brain_check()
+                await pretty_echo_async(f"<brain_init>\n{status_line}\n</brain_init>", title="Brain")
+            except Exception:
+                pass
+                    
+        except Exception:
+            pass
+
+    async def _evolution_stop(ctx) -> None:  # type: ignore[no-redef]
+        return None
+
+    register_plugin(
+        "self_evolution",
+        start=_evolution_start,
+        stop=_evolution_stop,
+        enabled=True,  # always enabled - core self-improvement
+        priority=7,  # after arch_memory
+        version="1.0.0",
+        deps=["arch_memory"],
+        features={"evolution", "self_improvement", "goal_driven"},
+    )
+
+    # Brain Health Monitor: periodic health check and auto-optimization
+    async def _brain_health_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.brain import get_brain
+            import asyncio
+            
+            brain = get_brain()
+            
+            async def _health_loop():
+                while True:
+                    await asyncio.sleep(300)  # Every 5 minutes
+                    try:
+                        status = brain.status()
+                        
+                        # Auto-optimize if health degraded
+                        if status.health == "degraded":
+                            try:
+                                from jinx.micro.runtime.autobrain_config import self_repair_check
+                                repairs = self_repair_check()
+                                if repairs:
+                                    from jinx.micro.ui.output import pretty_echo_async
+                                    await pretty_echo_async(
+                                        f"<brain_health>\nAuto-repair: {len(repairs)} fixes\n</brain_health>",
+                                        title="Brain"
+                                    )
+                            except Exception:
+                                pass
+                        
+                        # Trigger evolution if many failures
+                        if status.autobrain_success_rate < 0.7:
+                            try:
+                                await brain.analyze_and_improve()
+                            except Exception:
+                                pass
+                                
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_health_loop(), name="brain-health-monitor")
+            
+        except Exception:
+            pass
+
+    async def _brain_health_stop(ctx) -> None:  # type: ignore[no-redef]
+        return None
+
+    register_plugin(
+        "brain_health",
+        start=_brain_health_start,
+        stop=_brain_health_stop,
+        enabled=True,
+        priority=8,  # after self_evolution
+        version="1.0.0",
+        deps=["self_evolution"],
+        features={"health_monitor", "auto_optimize"},
+    )
+
+    # Brain Metrics: periodic metrics collection
+    async def _metrics_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.brain_metrics import take_snapshot
+            import asyncio
+            
+            async def _metrics_loop():
+                while True:
+                    await asyncio.sleep(600)  # Every 10 minutes
+                    try:
+                        take_snapshot()
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_metrics_loop(), name="brain-metrics")
+        except Exception:
+            pass
+
+    async def _metrics_stop(ctx) -> None:  # type: ignore[no-redef]
+        return None
+
+    register_plugin(
+        "brain_metrics",
+        start=_metrics_start,
+        stop=_metrics_stop,
+        enabled=True,
+        priority=9,
+        version="1.0.0",
+        deps=["brain_health"],
+        features={"metrics", "analytics"},
+    )
+
+    # Autonomous Monitor: continuous issue detection, auto-repair, smart rollback
+    async def _autonomous_monitor_start(ctx) -> None:  # type: ignore[no-redef]
+        try:
+            from jinx.micro.runtime.autonomous_monitor import run_monitoring_cycle, get_issue_summary
+            from jinx.micro.runtime.smart_rollback import take_snapshot, SnapshotType
+            import asyncio
+            
+            # Take initial snapshot
+            take_snapshot(SnapshotType.AUTO, "System startup", "startup")
+            
+            async def _monitor_loop():
+                while True:
+                    await asyncio.sleep(120)  # Every 2 minutes
+                    try:
+                        # Take periodic snapshot
+                        take_snapshot(SnapshotType.AUTO, "Periodic snapshot", "periodic")
+                        
+                        # Run monitoring cycle
+                        results = await run_monitoring_cycle()
+                        
+                        # Report if issues found or repairs made
+                        if results.get("issues_detected", 0) > 0 or results.get("repairs_attempted", 0) > 0:
+                            try:
+                                from jinx.micro.ui.output import pretty_echo_async
+                                summary = get_issue_summary()
+                                msg = f"<monitor>\nActive issues: {summary['active_issues']}"
+                                if results.get("repairs_successful", 0) > 0:
+                                    msg += f" | Repairs: {results['repairs_successful']}/{results['repairs_attempted']}"
+                                msg += "\n</monitor>"
+                                await pretty_echo_async(msg, title="Monitor")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_monitor_loop(), name="autonomous-monitor")
+            
+        except Exception:
+            pass
+
+    async def _autonomous_monitor_stop(ctx) -> None:  # type: ignore[no-redef]
+        # Take final snapshot before shutdown
+        try:
+            from jinx.micro.runtime.smart_rollback import take_snapshot, SnapshotType
+            take_snapshot(SnapshotType.CHECKPOINT, "Pre-shutdown checkpoint", "shutdown")
+        except Exception:
+            pass
+
+    register_plugin(
+        "autonomous_monitor",
+        start=_autonomous_monitor_start,
+        stop=_autonomous_monitor_stop,
+        enabled=True,
+        priority=10,  # after brain_metrics
+        version="1.0.0",
+        deps=["brain_metrics"],
+        features={"monitoring", "auto_repair", "rollback"},
+    )
+
     # Cognitive seeds: maintain short-term salient tokens from recent inputs for query expansion
     async def _cog_start(ctx) -> None:  # type: ignore[no-redef]
         import time
@@ -120,10 +431,7 @@ def register_builtin_plugins() -> None:
         from typing import Any
 
         TOK = re.compile(r"(?u)[\w\.]{3,}")
-        try:
-            ttl = float(os.getenv("JINX_COG_SEEDS_TTL", "30.0"))
-        except Exception:
-            ttl = 30.0
+        ttl = 30.0
 
         def _update(text: str) -> None:
             s = (text or "").strip()
@@ -189,18 +497,12 @@ def register_builtin_plugins() -> None:
     async def _auto_start(ctx) -> None:  # type: ignore[no-redef]
         import asyncio
         import importlib
-        import os
+        from pathlib import Path
         from typing import Any
 
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))  # jinx/micro
-        try:
-            conc = int(os.getenv("JINX_AUTODISC_MAX_CONC", "3"))
-        except Exception:
-            conc = 3
-        try:
-            start_ms = int(os.getenv("JINX_AUTODISC_START_MS", "400"))
-        except Exception:
-            start_ms = 400
+        base_dir = str(Path(__file__).resolve().parent.parent)  # jinx/micro
+        conc = 3
+        start_ms = 400
         sem = asyncio.Semaphore(max(1, conc))
 
         # track for stop
@@ -274,10 +576,7 @@ def register_builtin_plugins() -> None:
             started = []
         if not started:
             pass
-        try:
-            stop_ms = int(os.getenv("JINX_AUTODISC_STOP_MS", "300"))
-        except Exception:
-            stop_ms = 300
+        stop_ms = 300
         tasks: list[asyncio.Task] = []
         for _modname, fn in started[::-1]:
             if not fn:
@@ -322,19 +621,12 @@ def register_builtin_plugins() -> None:
     # Foresight: learn token/bigram frequencies and predict likely next tokens
     async def _foresight_start(ctx) -> None:  # type: ignore[no-redef]
         import asyncio
-        import os
         import time
         from typing import Any, List
         import jinx.state as jx_state
 
-        try:
-            topk = int(os.getenv("JINX_FORESIGHT_TOPK", "4"))
-        except Exception:
-            topk = 4
-        try:
-            ttl = float(os.getenv("JINX_FORESIGHT_TTL", "20.0"))
-        except Exception:
-            ttl = 20.0
+        topk = 4
+        ttl = 20.0
 
         # Lazy imports
         try:
@@ -349,14 +641,14 @@ def register_builtin_plugins() -> None:
             prefetch_base_ctx = None  # type: ignore
 
         state = load_state()
-        sem = asyncio.Semaphore(int(os.getenv("JINX_FORESIGHT_CONC", "2")))
+        sem = asyncio.Semaphore(2)
 
         async def _prefetch_variants(q: str, terms: List[str]) -> None:
             if not prefetch_project_ctx or not prefetch_base_ctx:
                 return
             async with sem:
-                proj_ms = int(os.getenv("JINX_FORESIGHT_PROJECT_MS", "240"))
-                base_ms = int(os.getenv("JINX_FORESIGHT_DIALOG_MS", "100"))
+                proj_ms = 240
+                base_ms = 100
                 tasks = []
                 for t in terms[:max(1, topk)]:
                     qv = (q + " " + t).strip()
@@ -415,18 +707,11 @@ def register_builtin_plugins() -> None:
     # Oracle: build a long-horizon term graph and predict next tokens via personalized PageRank
     async def _oracle_start(ctx) -> None:  # type: ignore[no-redef]
         import asyncio
-        import os
         from typing import Any, List
         import jinx.state as jx_state
 
-        try:
-            topk = int(os.getenv("JINX_ORACLE_TOPK", "6"))
-        except Exception:
-            topk = 6
-        try:
-            ttl = float(os.getenv("JINX_ORACLE_TTL", "28.0"))
-        except Exception:
-            ttl = 28.0
+        topk = 6
+        ttl = 28.0
 
         # Lazy imports
         try:
@@ -444,14 +729,14 @@ def register_builtin_plugins() -> None:
             put_base = None  # type: ignore
 
         adj = load_graph(max_nodes=12000)
-        sem = asyncio.Semaphore(int(os.getenv("JINX_ORACLE_CONC", "2")))
+        sem = asyncio.Semaphore(2)
 
         async def _prefetch_variants(q: str, terms: List[str]) -> None:
             if not prefetch_project_ctx or not prefetch_base_ctx:
                 return
             async with sem:
-                proj_ms = int(os.getenv("JINX_ORACLE_PROJECT_MS", "220"))
-                base_ms = int(os.getenv("JINX_ORACLE_DIALOG_MS", "90"))
+                proj_ms = 220
+                base_ms = 90
                 tasks = []
                 for t in terms[:max(1, topk)]:
                     qv = (q + " " + t).strip()
@@ -516,23 +801,13 @@ def register_builtin_plugins() -> None:
     # Hypersigil: variable-order n-gram model for next-token and short sequence predictions
     async def _hypersigil_start(ctx) -> None:  # type: ignore[no-redef]
         import asyncio
-        import os
         import time
         from typing import Any, List
         import jinx.state as jx_state
 
-        try:
-            topk = int(os.getenv("JINX_HSIGIL_TOPK", "5"))
-        except Exception:
-            topk = 5
-        try:
-            seq_len = int(os.getenv("JINX_HSIGIL_SEQ_LEN", "2"))
-        except Exception:
-            seq_len = 2
-        try:
-            ttl = float(os.getenv("JINX_HSIGIL_TTL", "24.0"))
-        except Exception:
-            ttl = 24.0
+        topk = 5
+        seq_len = 2
+        ttl = 24.0
 
         try:
             from jinx.micro.runtime.hypersigil_store import load_store, save_store, update_ngrams, predict_next_tokens, predict_next_sequences
@@ -549,14 +824,14 @@ def register_builtin_plugins() -> None:
             put_base = None  # type: ignore
 
         ng = load_store(max_keys=20000)
-        sem = asyncio.Semaphore(int(os.getenv("JINX_HSIGIL_CONC", "2")))
+        sem = asyncio.Semaphore(2)
 
         async def _prefetch_variants(q: str, terms: List[str], seqs: List[List[str]]) -> None:
             if not prefetch_project_ctx or not prefetch_base_ctx:
                 return
             async with sem:
-                proj_ms = int(os.getenv("JINX_HSIGIL_PROJECT_MS", "220"))
-                base_ms = int(os.getenv("JINX_HSIGIL_DIALOG_MS", "90"))
+                proj_ms = 220
+                base_ms = 90
                 tasks = []
                 # single-token variants
                 for t in terms[:max(1, topk)]:
@@ -637,7 +912,7 @@ def register_builtin_plugins() -> None:
         except Exception:
             _embed_text = None  # type: ignore
 
-        sem = asyncio.Semaphore(int(os.getenv("JINX_EMBEDOBS_CONC", "2")))
+        sem = asyncio.Semaphore(2)
 
         async def _on_intake(_topic: str, payload: Any) -> None:
             if _embed_text is None:
@@ -712,19 +987,9 @@ def register_builtin_plugins() -> None:
 
     # Arch boot: optionally submit an API architecture task at startup
     async def _arch_boot_start(ctx) -> None:  # type: ignore[no-redef]
-        # If Mission Planner is enabled, skip: autonomy is handled there
-        try:
-            if str(os.getenv("JINX_MISSION_PLANNER_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                return
-        except Exception:
-            pass
-        # Check if API already exists
-        try:
-            root = os.getcwd()
-            if os.path.isfile(os.path.join(root, "api", "app.py")):
-                return
-        except Exception:
-            pass
+        from pathlib import Path
+        # Mission Planner is enabled by default; skip arch_boot
+        return
         # Fully autonomous context derivation and spec synthesis
         try:
             from jinx.micro.llm.prompting import derive_basic_context, build_api_spec_prompt
@@ -732,31 +997,8 @@ def register_builtin_plugins() -> None:
             from jinx.micro.runtime.api import submit_task as _submit
         except Exception:
             return
-        name, resources = derive_basic_context()
-        prompt = build_api_spec_prompt(request=None, project_name=name, candidate_resources=resources)
-        try:
-            spec_ms = int(os.getenv("JINX_ARCH_SPEC_MS", "900"))
-        except Exception:
-            spec_ms = 900
-        spec_obj = None
-        try:
-            out, _ = await asyncio.wait_for(_spark(prompt), timeout=max(0.3, spec_ms) / 1000.0)
-            if isinstance(out, str) and out.strip():
-                import re as _re, json as _json
-                m = _re.search(r"\{[\s\S]*\}", out)
-                s = m.group(0) if m else out.strip()
-                obj = _json.loads(s)
-                if isinstance(obj, dict) and obj.get("resources"):
-                    spec_obj = obj
-        except Exception:
-            spec_obj = None
-        # Submit even if spec is None (architect will fallback to defaults)
-        try:
-            framework = (os.getenv("JINX_API_ARCH_FRAMEWORK", "fastapi") or "fastapi").strip().lower()
-            budget = int(os.getenv("JINX_API_ARCH_BUDGET_MS", "1600"))
-            await _submit("architect.api", spec=spec_obj, framework=framework, budget_ms=budget)
-        except Exception:
-            pass
+        # arch_boot is disabled when Mission Planner is active (default)
+        pass
 
     async def _arch_boot_stop(ctx) -> None:  # type: ignore[no-redef]
         return None
@@ -857,19 +1099,21 @@ def register_builtin_plugins() -> None:
         features={"reprogram"},
     )
 
-    # Shadow canary: in green mode, ack *.in files with *.ok in JINX_SELFUPDATE_SHADOW_DIR
+    # Shadow canary: in green mode, ack *.in files with *.ok in shadow dir
     async def _shadow_start(ctx) -> None:  # type: ignore[no-redef]
-        import os
+        from pathlib import Path
         import asyncio
         import time
 
-        d = (os.getenv("JINX_SELFUPDATE_SHADOW_DIR") or "").strip()
-        if not d or not os.path.isdir(d):
-            return
+        # Shadow dir is derived from project root if present
         try:
-            period = float(os.getenv("JINX_SHADOW_SCAN_SEC", "0.2"))
+            from jinx.bootstrap.env import ROOT
+            d = str(Path(ROOT) / ".jinx_shadow")
         except Exception:
-            period = 0.2
+            d = ""
+        if not d or not Path(d).is_dir():
+            return
+        period = 0.2
         sem = asyncio.Semaphore(4)
 
         async def _ack_one(p: str) -> None:
@@ -897,7 +1141,8 @@ def register_builtin_plugins() -> None:
                 try:
                     files = []
                     try:
-                        files = [os.path.join(d, x) for x in os.listdir(d) if x.endswith('.in')]
+                        dp = Path(d)
+                        files = [str(dp / x.name) for x in dp.iterdir() if x.name.endswith('.in')]
                     except Exception:
                         files = []
                     tasks = [asyncio.create_task(_ack_one(p)) for p in files[:16]]

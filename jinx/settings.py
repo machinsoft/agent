@@ -66,7 +66,7 @@ def _auto_rt_budget_ms() -> int:
 class RuntimeSettings:
     queue_maxsize: int = 100
     use_priority_queue: bool = False
-    queue_policy: str = "drop_oldest"  # future: drop_newest, block
+    queue_policy: str = "block"  # future: drop_newest, block
     supervise_tasks: bool = True
     autorestart_limit: int = 5
     backoff_min_ms: int = 50
@@ -99,41 +99,41 @@ class Settings:
     def from_env(overrides: Optional[Dict[str, Any]] = None) -> "Settings":
         o: Dict[str, Any] = overrides or {}
         # Base values
-        pulse_raw = int(o.get("pulse", os.getenv("PULSE", "100")))
-        timeout_raw = int(o.get("timeout", os.getenv("TIMEOUT", "30")))
+        pulse_raw = int(o.get("pulse", 100))
+        timeout_raw = int(o.get("timeout", 30))
         s = Settings(
             pulse=clamp_int(pulse_raw, 20, 1000),
             # Allow large idle timeouts (up to 24h) to support long sessions
             timeout=clamp_int(timeout_raw, 5, 86400),
         )
         # OpenAI
-        s.openai.api_key = str(o.get("openai_api_key", os.getenv("OPENAI_API_KEY", "")) or "") or None
-        s.openai.model = str(o.get("openai_model", os.getenv("OPENAI_MODEL", s.openai.model)))
-        s.openai.proxy = str(o.get("proxy", os.getenv("PROXY", "")) or "") or None
+        s.openai.api_key = str(o.get("openai_api_key", "") or "") or None
+        s.openai.model = str(o.get("openai_model", s.openai.model))
+        s.openai.proxy = str(o.get("proxy", "") or "") or None
         s.openai.vector_store_ids = _parse_csv(
-            str(o.get("vector_store_ids", os.getenv(ENV_OPENAI_VECTOR_STORE_ID, "")))
+            str(o.get("vector_store_ids", ""))
         )
         s.openai.force_file_search = bool(
-            _is_on(str(o.get("force_file_search", os.getenv(ENV_OPENAI_FORCE_FILE_SEARCH, "1"))))
+            _is_on(str(o.get("force_file_search", "1")))
         )
         # Runtime
         rt = s.runtime
-        rt.queue_maxsize = clamp_int(int(o.get("queue_maxsize", os.getenv("JINX_QUEUE_MAXSIZE", str(_auto_queue_maxsize())))), 50, 10000)
+        rt.queue_maxsize = clamp_int(int(o.get("queue_maxsize", _auto_queue_maxsize())), 50, 10000)
         rt.use_priority_queue = bool(
-            _is_on(str(o.get("use_priority_queue", os.getenv("JINX_USE_PRIORITY_QUEUE", "1"))))
+            _is_on(str(o.get("use_priority_queue", "1")))
         )
-        rt.queue_policy = str(o.get("queue_policy", os.getenv("JINX_QUEUE_POLICY", rt.queue_policy)))
-        rt.supervise_tasks = not _is_on(str(o.get("no_supervisor", os.getenv("JINX_NO_SUPERVISOR", "0"))))
-        rt.autorestart_limit = clamp_int(int(o.get("autorestart_limit", os.getenv("JINX_AUTORESTART_LIMIT", rt.autorestart_limit))), 0, 50)
-        rt.backoff_min_ms = clamp_int(int(o.get("backoff_min_ms", os.getenv("JINX_BACKOFF_MIN_MS", rt.backoff_min_ms))), 10, 10000)
-        rt.backoff_max_ms = clamp_int(int(o.get("backoff_max_ms", os.getenv("JINX_BACKOFF_MAX_MS", rt.backoff_max_ms))), rt.backoff_min_ms, 60000)
-        rt.hard_rt_budget_ms = clamp_int(int(o.get("hard_rt_budget_ms", os.getenv("JINX_HARD_RT_BUDGET_MS", str(_auto_rt_budget_ms())))), 10, 200)
-        rt.threads_max_workers = clamp_int(int(o.get("threads", os.getenv("JINX_THREADS", str(_auto_threads())))), 2, 64)
-        rt.auto_tune = not _is_on(str(o.get("no_autotune", os.getenv("JINX_NO_AUTOTUNE", "0"))))
+        rt.queue_policy = str(o.get("queue_policy", rt.queue_policy))
+        rt.supervise_tasks = not _is_on(str(o.get("no_supervisor", "0")))
+        rt.autorestart_limit = clamp_int(int(o.get("autorestart_limit", rt.autorestart_limit)), 0, 50)
+        rt.backoff_min_ms = clamp_int(int(o.get("backoff_min_ms", rt.backoff_min_ms)), 10, 10000)
+        rt.backoff_max_ms = clamp_int(int(o.get("backoff_max_ms", rt.backoff_max_ms)), rt.backoff_min_ms, 60000)
+        rt.hard_rt_budget_ms = clamp_int(int(o.get("hard_rt_budget_ms", _auto_rt_budget_ms())), 10, 200)
+        rt.threads_max_workers = clamp_int(int(o.get("threads", _auto_threads())), 2, 64)
+        rt.auto_tune = not _is_on(str(o.get("no_autotune", "0")))
         try:
-            rt.saturate_enable_ratio = clamp_float(float(o.get("saturate_enable_ratio", os.getenv("JINX_SATURATE_ENABLE", str(rt.saturate_enable_ratio)))) , 0.0, 1.0)
-            rt.saturate_disable_ratio = clamp_float(float(o.get("saturate_disable_ratio", os.getenv("JINX_SATURATE_DISABLE", str(rt.saturate_disable_ratio)))) , 0.0, 1.0)
-            rt.saturate_window_ms = clamp_int(int(o.get("saturate_window_ms", os.getenv("JINX_SATURATE_WINDOW_MS", str(rt.saturate_window_ms)))), 50, 10000)
+            rt.saturate_enable_ratio = clamp_float(float(o.get("saturate_enable_ratio", rt.saturate_enable_ratio)) , 0.0, 1.0)
+            rt.saturate_disable_ratio = clamp_float(float(o.get("saturate_disable_ratio", rt.saturate_disable_ratio)) , 0.0, 1.0)
+            rt.saturate_window_ms = clamp_int(int(o.get("saturate_window_ms", rt.saturate_window_ms)), 50, 10000)
         except Exception:
             pass
         return s

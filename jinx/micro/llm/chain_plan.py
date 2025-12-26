@@ -21,13 +21,14 @@ async def run_planner(user_text: str, *, max_subqueries: Optional[int] = None, p
     
     # Enhance query with brain systems BEFORE planning
     enhanced_txt = txt
-    import os
-    if os.getenv('JINX_BRAIN_ENHANCE_PLANNER', '1') in ('1', 'true', 'on'):
+    try:
         from jinx.micro.brain import expand_query
         expanded = await expand_query(txt)
         if expanded and expanded.confidence > 0.6:
             enhanced_txt = expanded.expanded
             await trace_plan({"phase": "enhanced", "confidence": expanded.confidence})
+    except Exception:
+        enhanced_txt = txt
 
     evid = await collect_pre_evidence(txt)
     planner_input = txt if not evid else (f"<user>\n{txt}\n</user>\n\n<evidence>\n{evid}\n</evidence>")

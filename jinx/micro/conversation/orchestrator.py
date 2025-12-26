@@ -2,10 +2,28 @@ from __future__ import annotations
 
 import traceback
 from typing import Optional
-import os
 import re
 import asyncio
 import time
+
+# AutoBrain adaptive configuration
+try:
+    from jinx.micro.runtime.autobrain_config import (
+        get_int as _ab_int,
+        get as _ab_get,
+        record_outcome as _ab_record,
+        record_failure as _ab_fail,
+        TaskContext as _AbCtx,
+    )
+    _AB_OK = True
+except Exception:
+    _AB_OK = False
+    def _ab_int(n, c=None): return 45
+    def _ab_get(n, c=None): return 45.0
+    def _ab_record(n, s, l=0, c=None): pass
+    def _ab_fail(c, e): pass
+    class _AbCtx:
+        def __init__(self, **kw): pass
 
 from jinx.logging_service import glitch_pulse, bomb_log, blast_mem
 from jinx.openai_service import spark_openai
@@ -28,7 +46,6 @@ from jinx.micro.memory.storage import read_channel as _read_channel
 from jinx.micro.conversation.memory_sanitize import sanitize_transcript_for_memory
 from jinx.micro.embeddings.project_config import ENABLE as PROJ_EMB_ENABLE
 from jinx.micro.embeddings.project_paths import PROJECT_FILES_DIR
-from jinx.micro.llm.chains import build_planner_context
 from jinx.micro.llm.chain_persist import persist_memory
 from jinx.micro.llm.kernel_sanitizer import sanitize_kernels as _sanitize_kernels
 from jinx.micro.exec.executor import spike_exec as _spike_exec
@@ -70,8 +87,10 @@ from jinx.micro.conversation.memory_program import infer_memory_program as _mem_
 from jinx.micro.embeddings.context_compact import compact_context as _compact_ctx
 from jinx.micro.memory.telemetry import log_metric as _log_metric
 from jinx.micro.rt.coop import coop as _coop
+from jinx.micro.runtime.task_ctx import get_current_group as _get_group
+from jinx.micro.event_synthesis.api import record_event as _record_event
 from jinx.micro.rt.activity import set_activity as _act, clear_activity as _act_clear, set_activity_detail as _actdet, clear_activity_detail as _actdet_clear
-from jinx.micro.rt.rt_budget import run_bounded as _bounded_run, env_ms as _env_ms
+from jinx.micro.rt.rt_budget import run_bounded as _bounded_run
 from jinx.micro.conversation.phases import (
     call_llm as _phase_llm,
     execute_blocks as _phase_exec,
@@ -88,6 +107,17 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
     """
     from jinx.micro.logger.debug_logger import debug_log
     await debug_log(f"START processing [id={turn_id or '-'}]: {x[:80]}", "SHATTER")
+    gid = _get_group()
+    _record_event("turn.start", {"turn_id": turn_id or "", "has_error": bool(err), "input_len": len(x or "")}, group=gid, weight=4.0)
+    
+    # === BRAIN TASK TRACKING ===
+    _brain_task_id: str = ""
+    try:
+        from jinx.micro.runtime.brain import get_brain
+        _brain = get_brain()
+        _brain_task_id = _brain.begin_task((x or "")[:120], {"group": gid, "turn_id": turn_id})
+    except Exception:
+        pass
     
     # === DYNAMIC CONFIGURATION ADAPTATION ===
     # AI-powered configuration tuning based on request type
@@ -101,7 +131,13 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             'transcript_size': 0,  # Will be filled below
         }
         
-        await adapt_config_for_request(x, adaptation_context)
+        try:
+            await asyncio.wait_for(adapt_config_for_request(x, adaptation_context), timeout=0.25)
+        except Exception:
+            try:
+                asyncio.create_task(adapt_config_for_request(x, adaptation_context))
+            except Exception:
+                pass
     except Exception:
         pass  # Silent fail - don't break on adaptation errors
     
@@ -109,17 +145,27 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         # Ensure micro-program runtime and event bridge are active before any code execution
         try:
             await debug_log("Ensuring runtime...", "SHATTER")
-            await _ensure_runtime()
-            # Ensure the background AutoPatchProgram is running so model code can submit edits
             try:
-                await _ensure_patcher()
+                await asyncio.wait_for(_ensure_runtime(), timeout=0.8)
             except Exception:
-                pass
-            # Ensure the embedding-based verifier is running for post-commit checks
+                try:
+                    asyncio.create_task(_ensure_runtime())
+                except Exception:
+                    pass
             try:
-                await _ensure_verifier()
+                await asyncio.wait_for(_ensure_patcher(), timeout=0.3)
             except Exception:
-                pass
+                try:
+                    asyncio.create_task(_ensure_patcher())
+                except Exception:
+                    pass
+            try:
+                await asyncio.wait_for(_ensure_verifier(), timeout=0.3)
+            except Exception:
+                try:
+                    asyncio.create_task(_ensure_verifier())
+                except Exception:
+                    pass
             await debug_log("Runtime ready", "SHATTER")
         except Exception as e:
             await debug_log(f"Runtime setup error: {e}", "SHATTER")
@@ -127,7 +173,14 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         # Append the user input to the transcript first to ensure ordering
         await debug_log("Appending to transcript...", "SHATTER")
         if x and x.strip():
-            await blast_mem(f"User: {x.strip()}")
+            _record_event("user.input", {"turn_id": turn_id or "", "text": x.strip()}, group=gid, weight=6.0)
+            try:
+                await asyncio.wait_for(blast_mem(f"User: {x.strip()}"), timeout=0.25)
+            except Exception:
+                try:
+                    asyncio.create_task(blast_mem(f"User: {x.strip()}"))
+                except Exception:
+                    pass
             # Also embed the raw user input for retrieval (source: dialogue) in background
             try:
                 asyncio.create_task(embed_text(x.strip(), source="dialogue", kind="user"))
@@ -135,7 +188,10 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                 pass
         await debug_log("Reading transcript...", "SHATTER")
         _act("reading transcript")
-        synth = await glitch_pulse()
+        try:
+            synth = await asyncio.wait_for(glitch_pulse(), timeout=0.6)
+        except Exception:
+            synth = ""
         await _coop()
         # Do not include the transcript in 'chains' since it is placed into <memory>
         # Do not inject error text into the body chains; it will live in <error>
@@ -153,7 +209,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         try:
             # Prefer error text for retrieval if present; fallback to user text, then transcript
             q_raw = (x or err or synth or "")
-            continuity_on = str(os.getenv("JINX_CONTINUITY_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no")
+            continuity_on = True
             anchors = {}
             if continuity_on:
                 try:
@@ -187,8 +243,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             # Optional: embeddings-backed memory context (no evergreen), env-gated (default OFF for API)
             mem_ctx_task = None
             try:
-                if str(os.getenv("JINX_EMBED_MEMORY_CTX", "0")).lower() not in ("", "0", "false", "off", "no"):
-                    mem_ctx_task = asyncio.create_task(_phase_mem_ctx(eff_q))
+                mem_ctx_task = asyncio.create_task(_phase_mem_ctx(eff_q))
             except Exception:
                 mem_ctx_task = None
             await _coop()
@@ -205,7 +260,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             proj_ctx_task: asyncio.Task[str] = asyncio.create_task(_phase_proj_ctx(_q, user_text=x or "", synth=synth or ""))
             # Await both contexts with strict RT budgets (disable by setting env to 0)
             try:
-                _actdet({"stage": "base_ctx", "rem_ms": _env_ms("JINX_STAGE_BASECTX_MS", 220)})
+                _actdet({"stage": "base_ctx", "rem_ms": 220})
             except Exception:
                 pass
             await debug_log("Awaiting base_ctx_task...", "SHATTER")
@@ -222,12 +277,12 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             mem_ctx = ""
             if 'mem_ctx_task' in locals() and mem_ctx_task is not None:
                 try:
-                    _actdet({"stage": "mem_ctx", "rem_ms": _env_ms("JINX_STAGE_MEMCTX_MS", 160)})
+                    _actdet({"stage": "mem_ctx", "rem_ms": 160})
                 except Exception:
                     pass
                 mem_ctx = await mem_ctx_task
             try:
-                _actdet({"stage": "proj_ctx", "rem_ms": _env_ms("JINX_STAGE_PROJCTX_MS", 260)})
+                _actdet({"stage": "proj_ctx", "rem_ms": 260})
             except Exception:
                 pass
             await debug_log("Awaiting proj_ctx_task...", "SHATTER")
@@ -253,7 +308,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             if not proj_ctx:
                 reuse = ""
                 try:
-                    ts_check = str(os.getenv("JINX_TOPIC_SHIFT_CHECK", "1")).lower() not in ("", "0", "false", "off", "no")
+                    ts_check = True
                     if ts_check and _is_short(x or ""):
                         shifted = await _topic_shift(_q)
                         topic_shifted = topic_shifted or bool(shifted)
@@ -289,19 +344,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             await _save_proj_ctx(proj_ctx or "", anchors=anchors if 'anchors' in locals() else None)
         except Exception:
             pass
-        # Optional: planner-enhanced context (adds at most one extra LLM call + small retrieval)
         plan_ctx = ""
-        try:
-            if str(os.getenv("JINX_PLANNER_CTX", "0")).lower() not in ("", "0", "false", "off", "no"):
-                plan_ctx = await build_planner_context(_q)
-        except Exception:
-            plan_ctx = ""
-        # Eagerly embed planner context (trimmed) for state retrieval coverage
-        if plan_ctx:
-            try:
-                asyncio.create_task(embed_text((plan_ctx or "")[:512], source="state", kind="plan"))
-            except Exception:
-                pass
         # Optional continuity block for the main brain
         try:
             cont_block = _render_cont_block(
@@ -327,10 +370,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             tq = None
         if tq:
             # Confidence gating to avoid false positives
-            try:
-                conf_min = float(os.getenv("JINX_TURNS_CONF_MIN", "0.3"))
-            except Exception:
-                conf_min = 0.3
+            conf_min = 0.3
             try:
                 kind = (tq.get("kind") or "pair").strip().lower()
                 idx = int(tq.get("index") or 0)
@@ -339,10 +379,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                 kind = "pair"; idx = 0; conf = 0.0
             if idx > 0 and conf >= conf_min:
                 try:
-                    try:
-                        cap_one = int(os.getenv("JINX_TURNS_MAX_CHARS", "800"))
-                    except Exception:
-                        cap_one = 800
+                    cap_one = 800
                     if kind == "user":
                         body = (await _turn_user(idx))
                         if body:
@@ -360,10 +397,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                         if 0 < idx <= len(turns):
                             u = (turns[idx-1].get("user") or "").strip()
                             a = (turns[idx-1].get("jinx") or "").strip()
-                            try:
-                                cap_pair = int(os.getenv("JINX_TURNS_PAIR_MAX_CHARS", "1200"))
-                            except Exception:
-                                cap_pair = 1200
+                            cap_pair = 1200
                             tiny = (u + "\n" + a).strip()
                             if cap_pair > 0 and len(tiny) > cap_pair:
                                 tiny = tiny[:cap_pair]
@@ -405,10 +439,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             except Exception:
                 ma = None
         if (not memsel_block) and ma:
-            try:
-                mconf_min = float(os.getenv("JINX_MEMSEL_CONF_MIN", "0.4"))
-            except Exception:
-                mconf_min = 0.4
+            mconf_min = 0.4
             action = str(ma.get("action") or "").strip().lower()
             params = ma.get("params") or {}
             try:
@@ -424,22 +455,12 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                         except Exception:
                             kk = 0
                         if kk <= 0:
-                            try:
-                                kk = int(os.getenv("JINX_MEMSEL_K", "8"))
-                            except Exception:
-                                kk = 8
+                            kk = 8
                         kk = max(1, min(16, kk))
-                        try:
-                            pv = int(os.getenv("JINX_MEMSEL_PREVIEW_CHARS", os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-                            pv = max(24, pv)
-                        except Exception:
-                            pv = 160
+                        pv = 160
                         lines = await _memroute(q, k=kk, preview_chars=pv)
                         body = "\n".join([ln for ln in (lines or [])[:kk] if ln])
-                        try:
-                            cap = int(os.getenv("JINX_MEMSEL_MAX_CHARS", "1200"))
-                        except Exception:
-                            cap = 1200
+                        cap = 1200
                         if body and cap > 0 and len(body) > cap:
                             body = body[:cap]
                         if body:
@@ -458,24 +479,14 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             # Fallback path: inject a minimal memroute block using the whole question as query
             try:
                 await log_debug("JINX_MEMSEL", "fallback_memroute")
-                try:
-                    fb_k = int(os.getenv("JINX_MEMSEL_FALLBACK_K", "4"))
-                except Exception:
-                    fb_k = 4
+                fb_k = 4
                 fb_k = max(1, min(8, fb_k))
-                try:
-                    pv = int(os.getenv("JINX_MEMSEL_PREVIEW_CHARS", os.getenv("JINX_MACRO_MEM_PREVIEW_CHARS", "160")))
-                    pv = max(24, pv)
-                except Exception:
-                    pv = 160
+                pv = 160
                 q = (x or "").strip()[:240]
                 lines = await _memroute(q, k=fb_k, preview_chars=pv)
                 body = "\n".join([ln for ln in (lines or [])[:fb_k] if ln])
                 if body:
-                    try:
-                        cap = int(os.getenv("JINX_MEMSEL_MAX_CHARS", "900"))
-                    except Exception:
-                        cap = 900
+                    cap = 900
                     if len(body) > cap:
                         body = body[:cap]
                     memsel_block = f"<memory_selected>\n{body}\n</memory_selected>"
@@ -489,7 +500,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                 asyncio.create_task(embed_text((memsel_block or "")[:512], source="state", kind="memsel"))
             except Exception:
                 pass
-        ctx = "\n".join([c for c in [base_ctx, proj_ctx, plan_ctx, cont_block, turns_block, memsel_block] if c])
+        ctx = "\n".join([c for c in [base_ctx, proj_ctx, cont_block, turns_block, memsel_block] if c])
         # Integrate resolved resources (from Resource Locator plugin) into context
         try:
             import jinx.state as _jx_state
@@ -514,12 +525,8 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
                     resolved_block = "<resolved_files>\n" + "\n".join(lines) + "\n</resolved_files>"
             except Exception:
                 resolved_block = ""
-        # Optional primary file preview (guarded by env flag, small size)
-        try:
-            _preview_on = str(os.getenv("JINX_FILE_PREVIEW", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            _preview_on = True
-        if _preview_on and primary and isinstance(primary, dict):
+        # Primary file preview (small size)
+        if primary and isinstance(primary, dict):
             try:
                 from jinx.micro.runtime.file_reader import read_file_preview as _read_preview
                 path = str(primary.get('path') or '')
@@ -542,82 +549,43 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             _ = await _auto_route(x or "", budget_ms=1500)
         except Exception:
             pass
-        # Optional compaction for orchestrator chains (default ON)
-        try:
-            _orch_cmp = str(os.getenv("JINX_CTX_COMPACT_ORCH", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            _orch_cmp = True
-        if _orch_cmp and ctx:
+        # Compaction for orchestrator chains
+        if ctx:
             try:
                 ctx = _compact_ctx(ctx)
             except Exception:
                 pass
         await _coop()
 
-        # Optional: Preload sanitized <plan_kernels> code before final execution, guarded by env
-        try:
-            if str(os.getenv("JINX_KERNELS_PRELOAD", "0")).lower() not in ("", "0", "false", "off", "no") and plan_ctx:
-                pk = []
-                s = plan_ctx
-                pos = 0
-                ltag = "<plan_kernels>"; rtag = "</plan_kernels>"
-                while True:
-                    i = s.find(ltag, pos)
-                    if i == -1:
-                        break
-                    j = s.find(rtag, i)
-                    if j == -1:
-                        break
-                    body = s[i + len(ltag): j]
-                    pos = j + len(rtag)
-                    safe = _sanitize_kernels(body)
-                    if safe:
-                        pk.append(safe)
-                if pk:
-                    async def _preload_cb(err_msg):
-                        if err_msg:
-                            await bomb_log(f"kernel preload error: {err_msg}")
-                    for code in pk:
-                        try:
-                            await _spike_exec(code, _chaos_taboo, _preload_cb)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
         # Continuity: persist a compact state frame via embeddings for next turns
         try:
-            if str(os.getenv("JINX_STATEFRAME_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no"):
-                guid = plan_ctx or ""
-                state_frame = build_state_frame(
-                    user_text=(x or ""),
-                    synth=synth or "",
-                    anchors=anchors if 'anchors' in locals() else None,
-                    guidance=guid,
-                    cont_block=cont_block,
-                    error_summary=(err.strip() if err and isinstance(err, str) else ""),
-                )
-                if state_frame and state_frame.strip():
-                    # Deduplicate by content hash to avoid drift/bloat
-                    import hashlib as _hashlib
-                    from jinx.micro.conversation.cont import load_cache_meta as _load_meta, save_last_context_with_meta as _save_meta
-                    sha = _hashlib.sha256(state_frame.encode("utf-8", errors="ignore")).hexdigest()
-                    try:
-                        meta = await _load_meta()
-                    except Exception:
-                        meta = {}
-                    if (meta.get("frame_sha") or "") != sha:
-                        await embed_text(state_frame, source="state", kind="frame")
-                        # Also update meta with the frame hash to gate future duplicates
-                        try:
-                            await _save_meta(proj_ctx or "", anchors if 'anchors' in locals() else None, frame_sha=sha)
-                        except Exception:
-                            pass
-                # Attempt periodic concept compaction (fast no-op if not time)
+            guid = ""
+            state_frame = build_state_frame(
+                user_text=(x or ""),
+                synth=synth or "",
+                anchors=anchors if 'anchors' in locals() else None,
+                guidance=guid,
+                cont_block=cont_block,
+                error_summary=(err.strip() if err and isinstance(err, str) else ""),
+            )
+            if state_frame and state_frame.strip():
+                import hashlib as _hashlib
+                from jinx.micro.conversation.cont import load_cache_meta as _load_meta, save_last_context_with_meta as _save_meta
+                sha = _hashlib.sha256(state_frame.encode("utf-8", errors="ignore")).hexdigest()
                 try:
-                    await _compact_frames()
+                    meta = await _load_meta()
                 except Exception:
-                    pass
+                    meta = {}
+                if (meta.get("frame_sha") or "") != sha:
+                    await embed_text(state_frame, source="state", kind="frame")
+                    try:
+                        await _save_meta(proj_ctx or "", anchors if 'anchors' in locals() else None, frame_sha=sha)
+                    except Exception:
+                        pass
+            try:
+                await _compact_frames()
+            except Exception:
+                pass
         except Exception:
             pass
         # 2) <memory> from file-based view (active.md or active.compact.md). Default ON.
@@ -627,8 +595,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             is_followup = False
         try:
             mem_text = ""
-            if str(os.getenv("JINX_MEMORY_BLOCK_SEND", "1")).lower() not in ("", "0", "false", "off", "no"):
-                mem_text = await _build_api_mem(is_followup, topic_shifted)
+            mem_text = await _build_api_mem(is_followup, topic_shifted)
         except Exception:
             mem_text = ""
         # 2.5) <evergreen> persistent durable facts
@@ -636,7 +603,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         # If explicitly enabled via JINX_EVERGREEN_SEND=1, include a compact selection.
         evergreen_text = ""
         try:
-            send_evg = str(os.getenv("JINX_EVERGREEN_SEND", "0")).lower() not in ("", "0", "false", "off", "no")
+            send_evg = False
             if send_evg:
                 q_for_evg = _q if '_q' in locals() else (x or "")
                 evergreen_text = await _select_evg(q_for_evg, anchors=anchors if 'anchors' in locals() else None)
@@ -645,21 +612,19 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         # Continuity: optionally gate evergreen (when sending) by topic shift on short follow-ups
         if evergreen_text:
             try:
-                if str(os.getenv("JINX_EVERGREEN_TOPIC_GUARD", "1")).lower() not in ("", "0", "false", "off", "no"):
-                    if _is_short(x or ""):
-                        try:
-                            shifted = await _topic_shift(_q)
-                        except Exception:
-                            shifted = False
-                        topic_shifted = topic_shifted or bool(shifted)
-                        if shifted:
-                            evergreen_text = ""
+                if _is_short(x or ""):
+                    try:
+                        shifted = await _topic_shift(_q)
+                    except Exception:
+                        shifted = False
+                    topic_shifted = topic_shifted or bool(shifted)
+                    if shifted:
+                        evergreen_text = ""
             except Exception:
                 pass
         # Optional: persist memory snapshot as Markdown for project embeddings ingestion
         try:
-            if (os.getenv("JINX_PERSIST_MEMORY", "1").strip().lower() not in ("", "0", "false", "off", "no")):
-                await persist_memory(mem_text, evergreen_text, user_text=(x or ""), plan_goal="")
+            await persist_memory(mem_text, evergreen_text, user_text=(x or ""), plan_goal="")
         except Exception:
             pass
         # 3) <task> reflects the immediate objective: when handling an error,
@@ -685,27 +650,12 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             chains = header_text + ("\n\n" + chains if chains else "")
         # Optional: lightweight telemetry about context block sizes
         try:
-            if str(os.getenv("JINX_CTX_TELEMETRY", "0")).lower() not in ("", "0", "false", "off", "no"):
-                payload = {
-                    "base_len": len(base_ctx or ""),
-                    "proj_len": len(proj_ctx or ""),
-                    "plan_len": len(plan_ctx or ""),
-                    "cont_len": len(cont_block or ""),
-                    "turns_len": len(turns_block or ""),
-                    "memsel_len": len(memsel_block or ""),
-                    "mem_len": len(mem_text or ""),
-                    "evg_len": len(evergreen_text or ""),
-                    "ctx_len": len(ctx or ""),
-                }
-                asyncio.create_task(_log_metric("orchestrator_ctx", payload))
+            pass
         except Exception:
             pass
         # Continuity dev echo (optional): tiny trace line for observability
         try:
-            if str(os.getenv("JINX_CONTINUITY_DEV_ECHO", "0")).lower() not in ("", "0", "false", "off", "no"):
-                sym_n = len(anchors.get("symbols", [])) if 'anchors' in locals() else 0
-                pth_n = len(anchors.get("paths", [])) if 'anchors' in locals() else 0
-                await _log_append(BLUE_WHISPERS, f"[CONT] short={int(_is_short(x or ''))} topic_shift={int(topic_shifted)} reuse={int(reuse_for_log)} sym={sym_n} path={pth_n}")
+            pass
         except Exception:
             pass
         # If an error is present, enforce a decay hit to drive auto-fix loop
@@ -715,13 +665,46 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             await dec_pulse(decay)
         # Final normalization guard
         chains = ensure_header_block_separation(chains)
+        
+        # === JINX IDENTITY GUARANTEE ===
+        # Jinx MUST always know who she is. Identity is non-negotiable.
+        try:
+            from jinx.micro.runtime.prompt_constructor import ensure_jinx_identity
+            chains = ensure_jinx_identity(chains)
+        except Exception:
+            pass
+        
+        # === MULTI-TASK PROMPT INJECTION ===
+        # If there are pending tasks in queue, inject multi-task context
+        try:
+            from jinx.micro.runtime.task_ctx import get_current_group
+            from jinx.micro.runtime.prompt_constructor import inject_multi_task_context
+            
+            # Check for pending tasks in current group
+            pending_count = 0
+            pending_texts = []
+            try:
+                from jinx.micro.runtime.frame_shift import get_pending_tasks_for_group
+                gid = get_current_group()
+                pending_texts = get_pending_tasks_for_group(gid, limit=5)
+                pending_count = len(pending_texts)
+            except Exception:
+                pass
+            
+            # Inject multi-task handling if multiple tasks pending
+            if pending_count > 0:
+                all_tasks = [x] + pending_texts[:4]  # Current + up to 4 pending
+                chains = inject_multi_task_context(chains, len(all_tasks), all_tasks)
+        except Exception:
+            pass
+        
         await debug_log(f"Final chains prepared, len={len(chains)}", "SHATTER")
         # Use a dedicated recovery prompt only when fixing an error; otherwise default prompt
         prompt_override = "burning_logic_recovery" if (err and err.strip()) else None
         # Streaming fast-path (env-gated): early-run on first complete code block
         executed_early: bool = False
         printed_tail_early: bool = False
-        stream_on = str(os.getenv("JINX_LLM_STREAM_FASTPATH", "1")).lower() not in ("", "0", "false", "off", "no")
+        stream_on = True
         await debug_log("Ready to call LLM", "SHATTER")
 
         # Early execution callback (receives code body and code_id)
@@ -742,6 +725,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             async def _early_err(e: Optional[str]) -> None:
                 if not e:
                     return
+                _record_event("exec.error", {"turn_id": turn_id or "", "phase": "early", "error": e, "code_id": cid}, group=gid, weight=6.0)
                 try:
                     # Label the preview so it doesn't look like a duplicate answer box
                     await bomb_log(f"[early exec error] code_id={cid} turn_id={turn_id or '-'}")
@@ -772,6 +756,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         await debug_log("Calling LLM...", "SHATTER")
         out, code_id = await _phase_llm(chains, prompt_override=prompt_override, stream_on=stream_on, on_first_block=_early_exec)
         await debug_log(f"LLM returned {len(out)} chars, code_id={code_id}", "SHATTER")
+        _record_event("llm.output", {"turn_id": turn_id or "", "code_id": code_id, "chars": len(out or ""), "preview": (out or "")[:320]}, group=gid, weight=3.5)
         await _coop()
         _act("normalizing model output")
         # Normalize model output to ensure exactly one <python_{code_id}> block and proper fences
@@ -798,6 +783,7 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
             # Sandbox callback sends None on success — ignore to avoid duplicate log prints
             if not err_msg:
                 return
+            _record_event("exec.error", {"turn_id": turn_id or "", "phase": "main", "error": err_msg, "code_id": code_id}, group=gid, weight=6.0)
             # Avoid re-printing the same model box; it's already shown above
             await show_sandbox_tail()
             # Attach the executed code to the error payload so recovery sees the code to fix
@@ -809,8 +795,15 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         await debug_log(f"Executing... (early_executed={executed_early})", "SHATTER")
         executed = True if executed_early else await _phase_exec(out, code_id, on_exec_error)
         await debug_log(f"Execution complete (executed={executed})", "SHATTER")
+        _record_event("exec.done", {"turn_id": turn_id or "", "code_id": code_id, "executed": bool(executed), "early": bool(executed_early)}, group=gid, weight=2.5)
         if not executed:
-            await bomb_log(f"No executable <python_{code_id}> block found in model output; displaying raw output.")
+            try:
+                await asyncio.wait_for(bomb_log(f"No executable <python_{code_id}> block found in model output; displaying raw output."), timeout=0.25)
+            except Exception:
+                try:
+                    asyncio.create_task(bomb_log(f"No executable <python_{code_id}> block found in model output; displaying raw output."))
+                except Exception:
+                    pass
             # Already printed above
             await dec_pulse(10)
             # Log a clean Jinx line (prefer question content); avoid raw tags
@@ -932,15 +925,28 @@ async def shatter(x: str, err: Optional[str] = None, turn_id: Optional[str] = No
         except Exception:
             pass
         
+        # === AUTOBRAIN LEARNING FEEDBACK ===
+        try:
+            elapsed_ms = (time.time() - request_start_time) * 1000
+            _ab_record("turn_timeout_sec", True, elapsed_ms)
+            _ab_record("stage_projctx_ms", True, elapsed_ms)
+        except Exception:
+            pass
+        
+        # === BRAIN TASK COMPLETION ===
+        try:
+            if _brain_task_id:
+                _brain.complete_task(success=True, result=f"completed in {(time.time() - request_start_time):.1f}s")
+        except Exception:
+            pass
+        
         # Run memory optimization after each model interaction using a per-turn snapshot (bounded, skip on shutdown)
         try:
             import jinx.state as _jx_state
             if not _jx_state.shutdown_event.is_set():
                 snap = await glitch_pulse()
                 from jinx.micro.memory.optimizer import submit as _opt_submit
-                _ = await _bounded_run(_opt_submit(snap), _env_ms("JINX_STAGE_MEMOPT_MS", 800))
+                _ = await _bounded_run(_opt_submit(snap), 800)
         except Exception:
             pass
         await debug_log("END - function complete", "SHATTER")
-
-

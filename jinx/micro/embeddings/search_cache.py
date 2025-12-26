@@ -1,24 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Any, Dict, List, Tuple, Optional
 
 from .project_search_api import search_project as _search_project
 
+# AutoBrain adaptive configuration
+try:
+    from jinx.micro.runtime.autobrain_config import (
+        get_int as _ab_int,
+        record_outcome as _ab_record,
+    )
+    _AB_OK = True
+except Exception:
+    _AB_OK = False
+    def _ab_int(n, c=None): return 4
+    def _ab_record(n, s, l=0, c=None): pass
+
 # Lightweight in-memory TTL cache + request coalescing for project search
 # Goal: avoid duplicate concurrent searches and reduce repeated work bursts
 
-try:
-    _TTL_SEC = float(os.getenv("JINX_SEARCH_TTL_SEC", "5"))  # small TTL, seconds
-except Exception:
-    _TTL_SEC = 5.0
-try:
-    _MAX_CONC = int(os.getenv("JINX_SEARCH_MAX_CONCURRENCY", "4"))
-except Exception:
-    _MAX_CONC = 4
-_DUMP = str(os.getenv("JINX_SEARCH_DUMP", "0")).lower() in {"1", "true", "on", "yes"}
+_TTL_SEC = 5.0
+_MAX_CONC = 4
+_DUMP = False
 
 _mem: Dict[Tuple[str, int, Optional[int]], Tuple[float, List[Dict[str, Any]]]] = {}
 _inflight: Dict[Tuple[str, int, Optional[int]], asyncio.Future] = {}

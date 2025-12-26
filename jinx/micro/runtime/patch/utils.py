@@ -29,17 +29,11 @@ def diff_stats(diff: str) -> Tuple[int, int]:
 
 
 def should_autocommit(strategy: str, diff: str) -> Tuple[bool, str]:
-    """Decide whether to auto-commit based on env thresholds and strategy.
+    """Decide whether to auto-commit based on thresholds and strategy.
 
     Returns (ok_to_commit, reason).
     """
-    try:
-        max_changes = int(os.getenv("JINX_PATCH_AUTOCOMMIT_MAX_CHANGES", "40"))
-    except Exception:
-        max_changes = 40
-    allow = str(os.getenv("JINX_PATCH_AUTOCOMMIT", "1")).lower() not in ("", "0", "false", "off", "no")
-    if not allow:
-        return False, "autocommit disabled"
+    max_changes = 40
     a, r = diff_stats(diff)
     total = a + r
     if total <= 0:
@@ -53,10 +47,7 @@ def should_autocommit(strategy: str, diff: str) -> Tuple[bool, str]:
 
 
 def syntax_check_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_CHECK_SYNTAX", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 # --- Formatting helpers -----------------------------------------------------
@@ -102,38 +93,23 @@ def normalize_indentation(lines: List[str]) -> List[str]:
 
 
 def preserve_docstring_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_PRESERVE_DOCSTRING", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 def anchor_last_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_ANCHOR_LAST", "0")).lower() in ("1", "true", "on", "yes")
-    except Exception:
-        return False
+    return False
 
 
 def anchor_regex_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_ANCHOR_REGEX", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 def auto_indent_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_AUTO_INDENT", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 def trim_trailing_ws_enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_PATCH_TRIM_TRAILING_WS", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 def trim_trailing_ws_lines(lines: List[str]) -> List[str]:

@@ -71,36 +71,27 @@ class AdaptivePromptOptimizer:
         self._register_default_templates()
     
     def _register_default_templates(self) -> None:
-        """Register default prompt template sections."""
-        # Base sections for burning_logic
+        """Register default prompt template sections using modular system."""
+        # Get available modules from burning_logic
+        try:
+            from jinx.prompts.burning_logic import list_modules
+            available = list_modules()
+        except Exception:
+            available = ['identity', 'format', 'pulse', 'code', 'agents']
+        
+        # Base sections for burning_logic - now modular
         self.templates['burning_logic'] = {
-            'persona': [
-                'jinx_arcane',  # Current long persona
-                'jinx_minimal',  # Compact version
-            ],
-            'rules': [
-                'strict_rules',  # Current strict rules
-                'relaxed_rules',  # More flexible
-            ],
-            'agents': [
-                'machine_agents_full',  # Current multi-agent
-                'machine_agents_compact',  # Simplified
-            ],
-            'constraints': [
-                'no_try_except',
-                'minimal_constraints',
-            ],
-            'format': [
-                'machine_python_blocks',
-                'simple_code_only',
-            ]
+            'core': ['identity', 'format', 'pulse'],  # Always included
+            'code': ['code'],  # For code tasks
+            'reasoning': ['agents'],  # For complex reasoning
+            'context': ['embeddings', 'priority', 'tokens', 'budget'],
+            'modes': ['error_recovery', 'architecture', 'api_design'],
         }
         
-        # Recovery prompt variants
+        # Recovery uses error_recovery module
         self.templates['burning_logic_recovery'] = {
-            'persona': ['jinx_recovery', 'jinx_debug'],
-            'error_handling': ['detailed_analysis', 'quick_fix'],
-            'constraints': ['strict_recovery', 'flexible_recovery'],
+            'core': ['identity', 'format', 'pulse'],
+            'mode': ['error_recovery', 'code'],
         }
         
         # Planner variants

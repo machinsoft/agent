@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 from typing import List
 
 # Pull data directly to avoid unresolved macros and keep RT behavior
 from jinx.micro.runtime.exports import collect_export, collect_export_for_group
-from jinx.micro.exec.run_exports import read_last_stdout, read_last_stderr, read_last_status
 from jinx.micro.runtime.task_ctx import get_current_group as _get_group
+
+_PREVIEW_CHARS = 160
+_RUN_TTL_MS = 120000
 
 
 def _clamp(s: str, lim: int) -> str:
@@ -14,13 +15,6 @@ def _clamp(s: str, lim: int) -> str:
     if lim <= 0:
         return s
     return s[:lim]
-
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        return max(0, int(os.getenv(name, str(default))))
-    except Exception:
-        return default
 
 
 async def patch_exports_lines() -> List[str]:
@@ -35,7 +29,7 @@ async def patch_exports_lines() -> List[str]:
     except Exception:
         gid = "main"
     # Preview clamp
-    prev_chars = _int_env("JINX_MACRO_MEM_PREVIEW_CHARS", 160)
+    prev_chars = _PREVIEW_CHARS
     # Collect aggregated exports
     try:
         prevs = await collect_export_for_group("last_patch_preview", gid, limit=1)
@@ -113,8 +107,9 @@ async def run_exports_lines(run_chars: int | None = None) -> List[str]:
     - Respects JINX_RUN_EXPORT_TTL_MS and preview char budget.
     """
     if run_chars is None:
-        run_chars = _int_env("JINX_MACRO_MEM_PREVIEW_CHARS", 160)
-    ttl_ms = _int_env("JINX_RUN_EXPORT_TTL_MS", 120000)
+        run_chars = _PREVIEW_CHARS
+    ttl_ms = _RUN_TTL_MS
+    from jinx.micro.exec.run_exports import read_last_stdout, read_last_stderr, read_last_status
     try:
         status = read_last_status(ttl_ms)
     except Exception:

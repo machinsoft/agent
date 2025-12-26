@@ -48,6 +48,9 @@ class HealthMonitor:
         # Statistics
         self._anomalies_detected = 0
         self._recovery_actions_taken = 0
+        # Print throttling to avoid console spam
+        self._last_anomaly: Optional[str] = None
+        self._last_anomaly_print_ts: float = 0.0
     
     async def start(self):
         """Start health monitoring loop."""
@@ -190,28 +193,66 @@ class HealthMonitor:
     async def _handle_anomaly(self, anomaly: str, metrics: HealthMetrics):
         """Handle detected anomaly."""
         
-        print(f"\n⚠️  ANOMALY DETECTED: {anomaly}")
-        print(f"   CPU: {metrics.cpu_percent:.1f}%")
-        print(f"   Memory: {metrics.memory_percent:.1f}%")
-        print(f"   Error Rate: {metrics.error_rate:.2%}")
-        print(f"   Latency: {metrics.avg_latency_ms:.1f}ms")
-        print(f"   Pulse: {metrics.pulse}")
+        now = time.time()
+        try:
+            same = (anomaly == self._last_anomaly)
+        except Exception:
+            same = False
+        # Print at most once per minute for the same anomaly, but always print when anomaly changes.
+        if (not same) or ((now - float(self._last_anomaly_print_ts or 0.0)) >= 60.0):
+            self._last_anomaly = anomaly
+            self._last_anomaly_print_ts = now
+            print(f"\n⚠️  ANOMALY DETECTED: {anomaly}")
+            print(f"   CPU: {metrics.cpu_percent:.1f}%")
+            print(f"   Memory: {metrics.memory_percent:.1f}%")
+            print(f"   Error Rate: {metrics.error_rate:.2%}")
+            print(f"   Latency: {metrics.avg_latency_ms:.1f}ms")
+            print(f"   Pulse: {metrics.pulse}")
         
         # Determine recovery action
         action = self._select_recovery_action(anomaly, metrics)
         
         if action:
-            print(f"   Recovery: {action}")
+            if (anomaly == self._last_anomaly):
+                try:
+                    # Only print recovery line when anomaly print was emitted
+                    if now == self._last_anomaly_print_ts:
+                        print(f"   Recovery: {action}")
+                except Exception:
+                    pass
+            else:
+                print(f"   Recovery: {action}")
             
             success = await self._execute_recovery(action, anomaly)
             
             if success:
                 self._recovery_actions_taken += 1
-                print("   ✓ Recovery successful")
+                if (anomaly == self._last_anomaly):
+                    try:
+                        if now == self._last_anomaly_print_ts:
+                            print("   ✓ Recovery successful")
+                    except Exception:
+                        pass
+                else:
+                    print("   ✓ Recovery successful")
             else:
-                print("   ✗ Recovery failed")
+                if (anomaly == self._last_anomaly):
+                    try:
+                        if now == self._last_anomaly_print_ts:
+                            print("   ✗ Recovery failed")
+                    except Exception:
+                        pass
+                else:
+                    print("   ✗ Recovery failed")
         
-        print()
+        if (anomaly == self._last_anomaly):
+            try:
+                if now == self._last_anomaly_print_ts:
+                    print()
+            except Exception:
+                pass
+        else:
+            print()
     
     def _select_recovery_action(
         self,

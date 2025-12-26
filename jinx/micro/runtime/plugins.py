@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import contextlib
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
@@ -46,30 +45,7 @@ def set_plugin_context(ctx: PluginContext) -> None:
 
 
 def _apply_env_overrides() -> None:
-    """Parse JINX_PLUGINS env like 'foo:on,bar:off,baz:prio=10'."""
-    s = (os.getenv("JINX_PLUGINS", "") or "").strip()
-    if not s:
-        return
-    for part in s.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" in part:
-            name, rest = part.split(":", 1)
-            name = name.strip()
-            rest = rest.strip()
-            p = _REGISTRY.get(name)
-            if not p:
-                continue
-            if rest in ("on", "enable", "1", "true"):
-                p.enabled = True
-            elif rest in ("off", "disable", "0", "false"):
-                p.enabled = False
-            elif rest.startswith("prio="):
-                try:
-                    p.priority = int(rest.split("=", 1)[1])
-                except Exception:
-                    pass
+    return
 
 
 def register_plugin(
@@ -124,9 +100,9 @@ def publish_event(topic: str, payload: Any) -> None:
     if not cbs:
         return
     loop = (_CTX.loop if _CTX else asyncio.get_event_loop())
-    budget_ms = int(os.getenv("JINX_PLUGIN_EVENT_MS", "60"))
+    budget_ms = 60
     async def _fire() -> None:
-        sem = asyncio.Semaphore(int(os.getenv("JINX_PLUGIN_EVENT_CONC", "4")))
+        sem = asyncio.Semaphore(4)
         tasks: List[asyncio.Task] = []
         async def _one(cb: EventCallback) -> None:
             async with sem:
@@ -194,8 +170,8 @@ async def start_plugins() -> None:
         ctx = PluginContext(loop=loop, shutdown_event=asyncio.Event(), settings=None, publish=publish_event)
     else:
         ctx = _CTX
-    start_ms = int(os.getenv("JINX_PLUGIN_START_MS", "400"))
-    conc = int(os.getenv("JINX_PLUGIN_MAX_CONC", "3"))
+    start_ms = 400
+    conc = 3
     sem = asyncio.Semaphore(max(1, conc))
     order = _toposort_enabled()
     tasks: List[asyncio.Task] = []
@@ -223,8 +199,8 @@ async def stop_plugins() -> None:
         ctx = PluginContext(loop=loop, shutdown_event=asyncio.Event(), settings=None, publish=publish_event)
     else:
         ctx = _CTX
-    stop_ms = int(os.getenv("JINX_PLUGIN_STOP_MS", "300"))
-    conc = int(os.getenv("JINX_PLUGIN_MAX_CONC", "3"))
+    stop_ms = 300
+    conc = 3
     sem = asyncio.Semaphore(max(1, conc))
     order = [p for p in _toposort_enabled()][::-1]
     tasks: List[asyncio.Task] = []
@@ -253,8 +229,8 @@ async def reload_plugin(name: str) -> None:
         ctx = PluginContext(loop=loop, shutdown_event=asyncio.Event(), settings=None, publish=publish_event)
     else:
         ctx = _CTX
-    stop_ms = int(os.getenv("JINX_PLUGIN_STOP_MS", "300"))
-    start_ms = int(os.getenv("JINX_PLUGIN_START_MS", "400"))
+    stop_ms = 300
+    start_ms = 400
     try:
         await _call_with_ctx(p.stop, ctx, stop_ms)
     finally:
@@ -272,7 +248,7 @@ async def start_plugin(name: str) -> None:
         ctx = PluginContext(loop=loop, shutdown_event=asyncio.Event(), settings=None, publish=publish_event)
     else:
         ctx = _CTX
-    start_ms = int(os.getenv("JINX_PLUGIN_START_MS", "400"))
+    start_ms = 400
     await _call_with_ctx(p.start, ctx, start_ms)
     p._status = "running"
     p._error = None
@@ -287,7 +263,7 @@ async def stop_plugin(name: str) -> None:
         ctx = PluginContext(loop=loop, shutdown_event=asyncio.Event(), settings=None, publish=publish_event)
     else:
         ctx = _CTX
-    stop_ms = int(os.getenv("JINX_PLUGIN_STOP_MS", "300"))
+    stop_ms = 300
     await _call_with_ctx(p.stop, ctx, stop_ms)
     p._status = "idle"
 

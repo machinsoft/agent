@@ -7,9 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
+import asyncio
 import importlib
 
-from jinx.bootstrap import ensure_optional, package
+from jinx.bootstrap import ensure_optional
 
 from .types import (
     CodeTaskDetailsResponse,
@@ -50,8 +51,7 @@ class Client:
         try:
             return importlib.import_module("httpx")
         except Exception:
-            package("httpx")
-            return importlib.import_module("httpx")
+            raise RuntimeError("Optional dependency missing: httpx")
 
     @staticmethod
     def _pick_proxy_env() -> Optional[str]:
@@ -74,8 +74,7 @@ class Client:
                     try:
                         socks = importlib.import_module("httpx_socks")
                     except ImportError:
-                        package("httpx-socks")
-                        socks = importlib.import_module("httpx_socks")
+                        raise RuntimeError("Optional dependency missing: httpx_socks")
                     transport = socks.AsyncProxyTransport.from_url(proxy)
                     return httpx.AsyncClient(timeout=timeout, limits=limits, transport=transport)
                 return httpx.AsyncClient(timeout=timeout, limits=limits, proxies=proxy)
@@ -109,6 +108,39 @@ class Client:
             h["ChatGPT-Account-Id"] = self._chatgpt_account_id
         return h
 
+    def _retry_config(self) -> Tuple[int, float]:
+        import os
+        r = os.getenv("JINX_HTTP_RETRIES", "2").strip()
+        b = os.getenv("JINX_HTTP_BACKOFF_MS", "200").strip()
+        try:
+            retries = max(0, int(r))
+        except Exception:
+            retries = 2
+        try:
+            backoff = max(0.0, float(b) / 1000.0)
+        except Exception:
+            backoff = 0.2
+        return retries, backoff
+
+    async def _request_text(self, method: str, url: str, *, params: Optional[Dict[str, Any]] = None, json: Any = None, headers: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+        http = self._http
+        retries, backoff = self._retry_config()
+        attempt = 0
+        while True:
+            try:
+                if method == "GET":
+                    req = http.get(url, headers=headers, params=params or None)
+                elif method == "POST":
+                    req = http.post(url, headers=headers, json=json)
+                else:
+                    req = http.request(method, url, headers=headers, params=params or None, json=json)
+                return await self._exec_request(req, method, url)
+            except Exception:
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                await asyncio.sleep(backoff * attempt)
+
     async def _exec_request(self, req, method: str, url: str) -> Tuple[str, str]:
         res = await req
         ct = res.headers.get("content-type", "")
@@ -139,8 +171,7 @@ class Client:
             url = f"{self._base_url}/api/codex/usage"
         else:
             url = f"{self._base_url}/wham/usage"
-        req = self._http.get(url, headers=self._headers())
-        body, ct = await self._exec_request(req, "GET", url)
+        body, ct = await self._request_text("GET", url, headers=self._headers())
         payload = self._decode_json(httpx, url, ct, body)
         return self._rate_limit_snapshot_from_payload(payload)
 
@@ -162,8 +193,7 @@ class Client:
             params["task_filter"] = task_filter
         if environment_id is not None:
             params["environment_id"] = environment_id
-        req = self._http.get(url, headers=self._headers(), params=params or None)
-        body, ct = await self._exec_request(req, "GET", url)
+        body, ct = await self._request_text("GET", url, params=params or None, headers=self._headers())
         return self._decode_json(httpx, url, ct, body)
 
     async def get_task_details(self, task_id: str) -> CodeTaskDetailsResponse:
@@ -176,8 +206,7 @@ class Client:
             url = f"{self._base_url}/api/codex/tasks/{task_id}"
         else:
             url = f"{self._base_url}/wham/tasks/{task_id}"
-        req = self._http.get(url, headers=self._headers())
-        body, ct = await self._exec_request(req, "GET", url)
+        body, ct = await self._request_text("GET", url, headers=self._headers())
         data = self._decode_json(httpx, url, ct, body)
         parsed = CodeTaskDetailsResponse.from_dict(data)
         return parsed, body, ct
@@ -188,8 +217,7 @@ class Client:
             url = f"{self._base_url}/api/codex/tasks/{task_id}/turns/{turn_id}/sibling_turns"
         else:
             url = f"{self._base_url}/wham/tasks/{task_id}/turns/{turn_id}/sibling_turns"
-        req = self._http.get(url, headers=self._headers())
-        body, ct = await self._exec_request(req, "GET", url)
+        body, ct = await self._request_text("GET", url, headers=self._headers())
         data = self._decode_json(httpx, url, ct, body)
         return TurnAttemptsSiblingTurnsResponse.from_dict(data)
 
@@ -199,8 +227,7 @@ class Client:
             url = f"{self._base_url}/api/codex/tasks"
         else:
             url = f"{self._base_url}/wham/tasks"
-        req = self._http.post(url, headers={**self._headers(), "content-type": "application/json"}, json=request_body)
-        body, ct = await self._exec_request(req, "POST", url)
+        body, ct = await self._request_text("POST", url, headers={**self._headers(), "content-type": "application/json"}, json=request_body)
         data = self._decode_json(httpx, url, ct, body)
         # prefer nested task.id
         task = data.get("task") if isinstance(data, dict) else None

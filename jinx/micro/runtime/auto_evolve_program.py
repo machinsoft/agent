@@ -8,6 +8,10 @@ from typing import Any, Dict, Optional
 from jinx.micro.runtime.program import MicroProgram
 from jinx.micro.runtime.contracts import TASK_REQUEST
 
+_AUTOEVOLVE_CONC = 3
+_AUTOEVOLVE_BUDGET_MS = 1600
+_AUTOFIX_TRIES = 3
+
 
 class AutoEvolveProgram(MicroProgram):
     """Autonomous self-repair and self-improvement orchestrator.
@@ -23,11 +27,8 @@ class AutoEvolveProgram(MicroProgram):
 
     def __init__(self) -> None:
         super().__init__(name="AutoEvolveProgram")
-        self._sem = asyncio.Semaphore(int(os.getenv("JINX_AUTOEVOLVE_CONC", "3")))
-        try:
-            self._budget_ms = int(os.getenv("JINX_AUTOEVOLVE_BUDGET_MS", "1600"))
-        except Exception:
-            self._budget_ms = 1600
+        self._sem = asyncio.Semaphore(_AUTOEVOLVE_CONC)
+        self._budget_ms = _AUTOEVOLVE_BUDGET_MS
         # Track limited retries for a given query when acquiring skills
         self._skill_retry: dict[str, int] = {}
 
@@ -82,7 +83,7 @@ class AutoEvolveProgram(MicroProgram):
                 "autofix.retry",
                 path=path,
                 query=q or (f"fix error: {path}" if path else "fix error"),
-                tries=int(os.getenv("JINX_AUTOFIX_TRIES", "3")),
+                tries=_AUTOFIX_TRIES,
             )
         except Exception:
             pass
@@ -102,7 +103,7 @@ class AutoEvolveProgram(MicroProgram):
                 "autofix.retry",
                 path=file_path,
                 query=msg or "repair failed patch",
-                tries=int(os.getenv("JINX_AUTOFIX_TRIES", "3")),
+                tries=_AUTOFIX_TRIES,
             )
         except Exception:
             pass

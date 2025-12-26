@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import json as _json
 from typing import Dict, Tuple
@@ -43,16 +42,7 @@ def _build_global_claims(comp_map: Dict[str, str]) -> list[str]:
       Z= P3(7) T1(5) S2(3)
     Gate with JINX_CTX_META_GLOBAL_CLAIMS (default on).
     """
-    try:
-        on = str(os.getenv("JINX_CTX_META_GLOBAL_CLAIMS", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = True
-    if not on:
-        return []
-    try:
-        top_n = max(1, int(os.getenv("JINX_CTX_META_CLAIMS_TOP", "6")))
-    except Exception:
-        top_n = 6
+    top_n = 6
     toks_all: list[str] = []
     for tag, _label in _TAGS:
         s = (comp_map.get(tag) or "")
@@ -78,16 +68,7 @@ def _build_weight_claims(comp_map: Dict[str, str]) -> list[str]:
       W= P3:0.42 T1:0.31 S2:0.17
     Gate with JINX_CTX_META_WEIGHT_CLAIMS (default off to avoid redundancy).
     """
-    try:
-        on = str(os.getenv("JINX_CTX_META_WEIGHT_CLAIMS", "0")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = False
-    if not on:
-        return []
-    try:
-        top_n = max(1, int(os.getenv("JINX_CTX_META_WEIGHTS_TOP", "6")))
-    except Exception:
-        top_n = 6
+    return []
     cnt: Dict[str, int] = {}
     for tag, _label in _TAGS:
         s = (comp_map.get(tag) or "")
@@ -196,10 +177,7 @@ def _extract_salient(present: Dict[str, str]) -> Tuple[Dict[str, float], Dict[st
     if total_m <= 0:
         return {}, mentions
     # Convert to boost factors
-    try:
-        gamma = float(os.getenv("JINX_CTX_WEIGHT_GAMMA", "0.5"))
-    except Exception:
-        gamma = 0.5
+    gamma = 0.5
     boost = {t: 1.0 + gamma * (mentions[t] / float(total_m)) for t in mentions}
     return boost, mentions
 
@@ -213,23 +191,13 @@ def _graph_edge_density_boost(present: Dict[str, str]) -> float:
         return 1.0
     edges = sum(1 for ln in lines if "->" in ln)
     dens = min(1.0, max(0.0, edges / max(1.0, float(len(lines)))))
-    try:
-        gamma = float(os.getenv("JINX_CTX_GRAPH_GAMMA", "0.35"))
-    except Exception:
-        gamma = 0.35
+    gamma = 0.35
     return 1.0 + gamma * dens
 
 
 def _budget_plan(present: Dict[str, str], total_budget: int) -> Dict[str, int]:
     # Default weights can be tuned via env; code highest priority
-    try:
-        w_code = float(os.getenv("JINX_CTX_W_CODE", "0.5"))
-        w_refs = float(os.getenv("JINX_CTX_W_REFS", "0.25"))
-        w_graph = float(os.getenv("JINX_CTX_W_GRAPH", "0.1"))
-        w_mem = float(os.getenv("JINX_CTX_W_MEMORY", "0.12"))
-        w_brain = float(os.getenv("JINX_CTX_W_BRAIN", "0.03"))
-    except Exception:
-        w_code, w_refs, w_graph, w_mem, w_brain = 0.5, 0.25, 0.1, 0.12, 0.03
+    w_code, w_refs, w_graph, w_mem, w_brain = 0.5, 0.25, 0.1, 0.12, 0.03
     weights: Dict[str, float] = {
         "embeddings_code": w_code,
         "embeddings_refs": w_refs,
@@ -248,10 +216,7 @@ def _budget_plan(present: Dict[str, str], total_budget: int) -> Dict[str, int]:
         "embeddings_meta": 60,
     }
     # Optional dynamic reweighting based on salient tokens from brain
-    try:
-        dyn_on = str(os.getenv("JINX_CTX_DYNAMIC_WEIGHTS", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        dyn_on = True
+    dyn_on = True
     if dyn_on:
         boost, _mentions = _extract_salient(present)
         for t, f in boost.items():
@@ -358,14 +323,8 @@ def _code_ranges_only(present: Dict[str, str], comp_map: Dict[str, str]) -> Tupl
     # Build path tokens and claims
     claims: list[str] = []
     toks = _brain_tokens(present)
-    try:
-        hs_max = max(0, int(os.getenv("JINX_CTX_CODE_HS_LINES", "2")))
-    except Exception:
-        hs_max = 2
-    try:
-        hs_chars = max(24, int(os.getenv("JINX_CTX_CODE_HS_CHARS", "80")))
-    except Exception:
-        hs_chars = 80
+    hs_max = 2
+    hs_chars = 80
     path_token: Dict[str, str] = {}
     pcount = 0
     # Attempt to reuse existing P tokens from meta
@@ -417,16 +376,7 @@ def _build_cross_claims(comp_map: Dict[str, str]) -> list[str]:
       M= S2(3) E1(1)
     Gate with JINX_CTX_META_CLAIMS_EXT (default on). Limit items per block with JINX_CTX_META_CLAIMS_TOP.
     """
-    try:
-        on = str(os.getenv("JINX_CTX_META_CLAIMS_EXT", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = True
-    if not on:
-        return []
-    try:
-        top_n = max(1, int(os.getenv("JINX_CTX_META_CLAIMS_TOP", "6")))
-    except Exception:
-        top_n = 6
+    top_n = 6
     out: list[str] = []
     for tag, alias in (("embeddings_refs", "R"), ("embeddings_graph", "G"), ("embeddings_memory", "M")):
         s = (comp_map.get(tag) or "")
@@ -473,10 +423,7 @@ def _token_map_compress(all_blocks: Dict[str, str]) -> Tuple[Dict[str, str], str
     # Rank by potential savings: len(label) * (count-1)
     ranked = sorted(freq.items(), key=lambda kv: (len(kv[0][1]) * max(0, kv[1] - 1)), reverse=True)
     # Cap mapping size
-    try:
-        cap = int(os.getenv("JINX_CTX_META_CAP", "32"))
-    except Exception:
-        cap = 32
+    cap = 32
     mapping: Dict[Tuple[str, str], str] = {}
     counters = {"path": 0, "symbol": 0, "term": 0, "framework": 0, "import": 0, "error": 0}
     for (kind, label), _n in ranked:
@@ -549,12 +496,7 @@ def _build_relation_claims(present: Dict[str, str], comp_map: Dict[str, str]) ->
       L name=<sym> D= P3 P5 C= P2 P2
     Gate with JINX_CTX_META_REL_CLAIMS (default on).
     """
-    try:
-        on = str(os.getenv("JINX_CTX_META_REL_CLAIMS", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = True
-    if not on:
-        return []
+    on = True
     meta_prev = (present.get("embeddings_meta") or "")
     pmap = _parse_path_tokens(meta_prev)
     if not pmap:
@@ -568,14 +510,8 @@ def _build_relation_claims(present: Dict[str, str], comp_map: Dict[str, str]) ->
             syms.append(nm)
     if not syms:
         return []
-    try:
-        topn = max(1, int(os.getenv("JINX_CTX_META_REL_TOP", "4")))
-    except Exception:
-        topn = 4
-    try:
-        capk = max(1, int(os.getenv("JINX_CTX_META_REL_K", "4")))
-    except Exception:
-        capk = 4
+    topn = 4
+    capk = 4
     idx = _load_symbol_index_sync()
     defs_map: Dict[str, list] = (idx.get("defs") or {})  # type: ignore[assignment]
     calls_map: Dict[str, list] = (idx.get("calls") or {})  # type: ignore[assignment]
@@ -611,19 +547,13 @@ def _build_relation_claims(present: Dict[str, str], comp_map: Dict[str, str]) ->
 def compact_context(text: str) -> str:
     s = text or ""
     # Total budget for all embeddings blocks combined
-    try:
-        total = int(os.getenv("JINX_CTX_TOTAL_BUDGET", "4800"))
-    except Exception:
-        total = 4800
+    total = 4800
 
     blocks = _parse_blocks(s)
     if not blocks:
         return s
     # Optional token mapping compression (default ON)
-    try:
-        map_on = str(os.getenv("JINX_CTX_META_ENABLE", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        map_on = True
+    map_on = True
     meta_body = ""
     if map_on:
         blocks2, meta_body = _token_map_compress(blocks)
@@ -639,10 +569,7 @@ def compact_context(text: str) -> str:
             body = blocks[tag]
             comp_map[tag] = _compact_one(tag, body, budgets.get(tag, len(body)))
     # Code range only mode (env-gated): replace code with compact range references and claims
-    try:
-        ranges_only = str(os.getenv("JINX_CTX_CODE_RANGES_ONLY", "0")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        ranges_only = False
+    ranges_only = False
     extra_meta_lines: list[str] = []
     if ranges_only and (blocks.get("embeddings_code") or "").strip():
         comp_map, claim_lines = _code_ranges_only(blocks, comp_map)

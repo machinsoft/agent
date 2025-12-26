@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from typing import Optional, List, Pattern
 from functools import lru_cache
@@ -95,6 +94,7 @@ _sanitizer = KernelSanitizer.get_instance()
 # Legacy compatibility
 _FORBIDDEN_PATTERNS = [pat.pattern for pat in _sanitizer._patterns]
 _DEF_TRIPLE = ("'''", '"""')
+_KERNEL_MAXCHARS = 3000
 
 
 def sanitize_kernels(code: str) -> str:
@@ -102,7 +102,7 @@ def sanitize_kernels(code: str) -> str:
 
     Rules:
     - Forbid triple quotes.
-    - Enforce max char length from env JINX_KERNEL_MAXCHARS (default 3000).
+    - Enforce max char length.
     - Reject if obvious forbidden tokens are present.
     - This is a best-effort hygiene gate; not a sandbox replacement.
     """
@@ -110,10 +110,7 @@ def sanitize_kernels(code: str) -> str:
     if not body:
         return ""
     
-    try:
-        max_chars = max(256, int(os.getenv("JINX_KERNEL_MAXCHARS", "3000")))
-    except Exception:
-        max_chars = 3000
+    max_chars = _KERNEL_MAXCHARS
     
     if len(body) > max_chars:
         return ""

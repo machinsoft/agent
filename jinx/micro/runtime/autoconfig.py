@@ -271,24 +271,36 @@ def apply_auto_defaults(settings: Any | None = None) -> None:
     _set_default("JINX_PATTERN_LEARNING", "1")
     
     # =================================================================
-    # CONCURRENT PROCESSING - Based on system capabilities
+    # CONCURRENT PROCESSING - Handled by AutoBrain adaptively
     # =================================================================
     
-    if caps['high_performance']:
-        # High-end system: max concurrency
-        _set_default("JINX_MAX_CONCURRENT", "5")
-        _set_default("JINX_FRAME_MAX_CONC", "4")
-        _set_default("JINX_GROUP_MAX_CONC", "3")
-    elif caps['medium_performance']:
-        # Medium system: balanced
-        _set_default("JINX_MAX_CONCURRENT", "3")
-        _set_default("JINX_FRAME_MAX_CONC", "2")
-        _set_default("JINX_GROUP_MAX_CONC", "2")
-    else:
-        # Low-end system: conservative
-        _set_default("JINX_MAX_CONCURRENT", "2")
-        _set_default("JINX_FRAME_MAX_CONC", "1")
-        _set_default("JINX_GROUP_MAX_CONC", "1")
+    # Initialize AutoBrain with system-appropriate baselines
+    try:
+        from jinx.micro.runtime.autobrain_config import _get_param_state, _save_param_state
+        
+        if caps['high_performance']:
+            # High-end system: start with higher baselines
+            for name, val in [("frame_max_conc", 4), ("group_max_conc", 3), ("sandbox_conc", 3)]:
+                p = _get_param_state(name, "global")
+                if p.samples < 5:  # Only set if not enough learning data
+                    p.current = val
+                    _save_param_state(p, "global")
+        elif caps['medium_performance']:
+            # Medium system: balanced baselines
+            for name, val in [("frame_max_conc", 3), ("group_max_conc", 2), ("sandbox_conc", 2)]:
+                p = _get_param_state(name, "global")
+                if p.samples < 5:
+                    p.current = val
+                    _save_param_state(p, "global")
+        else:
+            # Low-end system: conservative baselines (AutoBrain will adapt up if needed)
+            for name, val in [("frame_max_conc", 2), ("group_max_conc", 2), ("sandbox_conc", 1)]:
+                p = _get_param_state(name, "global")
+                if p.samples < 5:
+                    p.current = val
+                    _save_param_state(p, "global")
+    except Exception:
+        pass  # AutoBrain not available yet, will use defaults
     
     # Context continuity
     _set_default("JINX_CONTEXT_CONTINUITY", "1")
@@ -308,20 +320,31 @@ def apply_auto_defaults(settings: Any | None = None) -> None:
     _set_default("JINX_SMART_CACHE_ENTRIES", "1000")
     
     # =================================================================
-    # CHAINED REASONING - Fully autonomous
+    # CHAINED REASONING - Fully autonomous, AutoBrain adaptive
     # =================================================================
     
     _set_default("JINX_CHAINED_REASONING", "1")
     _set_default("JINX_CHAINED_REFLECT", "1")
     _set_default("JINX_CHAINED_ADVISORY", "1")
     
-    # Auto budgets based on system
-    if caps['high_performance']:
-        _set_default("JINX_CHAINED_DIALOG_CTX_MS", "200")
-        _set_default("JINX_CHAINED_PROJECT_CTX_MS", "800")
-    else:
-        _set_default("JINX_CHAINED_DIALOG_CTX_MS", "140")
-        _set_default("JINX_CHAINED_PROJECT_CTX_MS", "500")
+    # Initialize AutoBrain timeouts based on system capabilities
+    try:
+        from jinx.micro.runtime.autobrain_config import _get_param_state, _save_param_state
+        
+        if caps['high_performance']:
+            for name, val in [("stage_basectx_ms", 600), ("stage_projctx_ms", 6000)]:
+                p = _get_param_state(name, "global")
+                if p.samples < 5:
+                    p.current = val
+                    _save_param_state(p, "global")
+        else:
+            for name, val in [("stage_basectx_ms", 400), ("stage_projctx_ms", 4000)]:
+                p = _get_param_state(name, "global")
+                if p.samples < 5:
+                    p.current = val
+                    _save_param_state(p, "global")
+    except Exception:
+        pass
     
     # =================================================================
     # UI & UX - Optimal defaults

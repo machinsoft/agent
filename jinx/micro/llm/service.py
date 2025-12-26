@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time as _time
 from jinx.openai_mod import build_header_and_tag
 from .openai_caller import call_openai, call_openai_validated, call_openai_stream_first_block
 from jinx.log_paths import OPENAI_REQUESTS_DIR_GENERAL
@@ -29,24 +30,73 @@ from jinx.micro.llm.enrichers.exports import (
 )
 from jinx.micro.memory.turn_summaries import read_group_summary as _read_group_summary
 from jinx.micro.runtime.task_ctx import get_current_group as _get_group
+from jinx.micro.event_synthesis.api import (
+    build_event_stream_block as _build_event_stream_block,
+    build_event_state_block as _build_event_state_block,
+)
 from jinx.micro.llm.prompt_brain import compose_policy_tail, record_prompt_outcome
 
+# AutoBrain adaptive configuration
+try:
+    from jinx.micro.runtime.autobrain_config import (
+        get_int as _ab_int,
+        record_outcome as _ab_record,
+        record_failure as _ab_fail,
+    )
+    _AB_OK = True
+except Exception:
+    _AB_OK = False
+    def _ab_int(n, c=None): return 20000
+    def _ab_record(n, s, l=0, c=None): pass
+    def _ab_fail(c, e): pass
 
-async def code_primer(prompt_override: str | None = None) -> tuple[str, str]:
+_PROMPT_MACRO_MAX = 50
+_DEFAULT_PROMPT = "burning_logic"
+_DEFAULT_MODEL = "gpt-4.1"
+
+async def code_primer(
+    prompt_override: str | None = None,
+    *,
+    has_code_task: bool = True,
+    has_complex_reasoning: bool = False,
+    has_embeddings: bool = False,
+    is_error_recovery: bool = False,
+    task_count: int = 0,
+) -> tuple[str, str]:
     """Build instruction header and return it with a code tag identifier.
 
     Returns (header_plus_prompt, code_tag_id).
+    Uses modular prompt system to minimize tokens.
     """
-    return await build_header_and_tag(prompt_override)
+    return await build_header_and_tag(
+        prompt_override,
+        has_code_task=has_code_task,
+        has_complex_reasoning=has_complex_reasoning,
+        has_embeddings=has_embeddings,
+        is_error_recovery=is_error_recovery,
+        task_count=task_count,
+    )
 
 
 
 
 async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> tuple[str, str, str, str, str]:
     """Compose instructions with brain systems integration and ML enhancement."""
-    jx, tag = await code_primer(prompt_override)
+    # Detect task characteristics for modular prompt
+    _txt = txt or ""
+    has_embeddings = "<embeddings_" in _txt
+    has_error = "<error>" in _txt or "error" in _txt.lower()[:200]
+    is_complex = len(_txt) > 1000 or has_embeddings
+    
+    jx, tag = await code_primer(
+        prompt_override,
+        has_code_task=True,
+        has_complex_reasoning=is_complex,
+        has_embeddings=has_embeddings,
+        is_error_recovery=has_error,
+    )
     # Precompute sanitized input for optional enrichers that need it earlier
-    stxt = sanitize_prompt_for_external_api(txt or "")
+    stxt = sanitize_prompt_for_external_api(_txt)
     
     # Cooperative yield - always enabled for RT constraints
     async def _yield0() -> None:
@@ -65,11 +115,7 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
     try:
         jx = await compose_dynamic_prompt(jx, key=tag)
         # Auto-inject compact board state macro (JIN-FEN) to replace long history
-        try:
-            board_on = str(os.getenv("JINX_BOARD_PROMPT", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            board_on = True
-        if board_on and ("<$board" not in jx):
+        if "<$board" not in jx:
             jx = "<board fen>\n" + jx
         await _yield0()
         # Inject compact per-group rolling summary (if any)
@@ -83,81 +129,83 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
             gctx = ""
         if gctx:
             jx = jx + "\n" + gctx + "\n"
+        ev_state = _build_event_state_block(gid, max_chars=900)
+        if ev_state:
+            jx = jx + "\n" + ev_state + "\n"
+        ev_block = _build_event_stream_block(gid, max_events=48, max_chars=1800)
+        if ev_block:
+            jx = jx + "\n" + ev_block + "\n"
+        # Inject architectural memory context (what we're working on)
+        try:
+            from jinx.micro.runtime.arch_memory import build_context_block as _arch_ctx
+            arch_block = _arch_ctx()
+            if arch_block and len(arch_block) > 20:
+                jx = jx + "\n" + arch_block + "\n"
+        except Exception:
+            pass
+        # Inject evolution context (goals, learnings) - minimal, only active goals
+        try:
+            from jinx.micro.runtime.self_evolution import build_evolution_context as _evo_ctx
+            evo_block = _evo_ctx()
+            if evo_block and len(evo_block) > 20:
+                jx = jx + "\n" + evo_block + "\n"
+        except Exception:
+            pass
+        # Inject strategic plan context (active plans and current subtask)
+        try:
+            from jinx.micro.runtime.strategic_planner import build_plan_context as _plan_ctx
+            plan_block = _plan_ctx()
+            if plan_block and len(plan_block) > 20:
+                jx = jx + "\n" + plan_block + "\n"
+        except Exception:
+            pass
         await _yield0()
         # Unified embeddings context (code+brain+refs+graph+memory)
         try:
-            # Use configurable timeout for unified context
-            unified_timeout = int(os.getenv("EMBED_UNIFIED_MAX_TIME_MS", "3000"))
-            _ctx = await build_unified_context_for(txt or "", max_chars=None, max_time_ms=unified_timeout)
+            _ctx = await build_unified_context_for(txt or "", max_chars=None, max_time_ms=3000)
         except Exception:
             _ctx = ""
         have_unified_ctx = bool((_ctx or "").strip())
         if have_unified_ctx:
-            try:
-                # Default ON: machine-level compaction for <embeddings_*> blocks
-                cmp_on = str(os.getenv("JINX_CTX_COMPACT", "1")).lower() not in ("", "0", "false", "off", "no")
-            except Exception:
-                cmp_on = True
-            _ctx_final = compact_context(_ctx) if cmp_on else _ctx
+            _ctx_final = compact_context(_ctx)
             jx = jx + "\n" + _ctx_final + "\n"
         # Auto-inject helpful embedding macros so the user doesn't need to type them (fallback if unified ctx missing)
-        try:
-            auto_on = str(os.getenv("JINX_AUTOMACROS", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            auto_on = True
-        if auto_on and (not have_unified_ctx) and ("{{m:" not in jx or "{{m:emb:" not in jx or "{{m:mem:" not in jx):
+        if (not have_unified_ctx) and ("{{m:" not in jx or "{{m:emb:" not in jx or "{{m:mem:" not in jx):
             lines = await auto_context_lines(txt)
             if lines:
                 jx = jx + "\n" + "\n".join(lines) + "\n"
         # Auto-inject code intelligence lines (usage/def) to help answer "where is this used?"
-        try:
-            code_auto_on = str(os.getenv("JINX_AUTOMACRO_CODE", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            code_auto_on = True
-        if code_auto_on:
+        if True:
             clines = await auto_code_lines(txt)
             if clines:
                 jx = jx + "\n" + "\n".join(clines) + "\n"
         await _yield0()
         # Optional CodeGraph snippets enrichment
         try:
-            if str(os.getenv("JINX_CODEGRAPH_CTX", "1")).lower() not in ("", "0", "false", "off", "no"):
-                from jinx.codegraph.service import snippets_for_text as _cg_snips
-                pairs = await _cg_snips(stxt, max_tokens=8, max_snippets=4)
-                if pairs:
-                    cg = []
-                    for hdr, block in pairs:
-                        cg.append(hdr)
-                        cg.append(block)
-                    jx = jx + "\n" + "\n".join(cg) + "\n"
+            from jinx.codegraph.service import snippets_for_text as _cg_snips
+            pairs = await _cg_snips(stxt, max_tokens=8, max_snippets=4)
+            if pairs:
+                cg = []
+                for hdr, block in pairs:
+                    cg.append(hdr)
+                    cg.append(block)
+                jx = jx + "\n" + "\n".join(cg) + "\n"
         except Exception:
             pass
         # Optionally include recent patch previews/commits from runtime exports
-        try:
-            include_patch = str(os.getenv("JINX_AUTOMACRO_PATCH_EXPORTS", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            include_patch = True
-        if include_patch and ("{{export:" not in jx or "{{export:last_patch_" not in jx):
+        if ("{{export:" not in jx or "{{export:last_patch_" not in jx):
             exp_lines = await _patch_exports_lines()
             if exp_lines:
                 jx = jx + "\n" + "\n".join(exp_lines) + "\n"
         await _yield0()
         # Optionally include last verification results
-        try:
-            include_verify = str(os.getenv("JINX_AUTOMACRO_VERIFY_EXPORTS", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            include_verify = True
-        if include_verify and ("{{export:" not in jx or "{{export:last_verify_" not in jx):
+        if ("{{export:" not in jx or "{{export:last_verify_" not in jx):
             vlines = await _verify_exports_lines()
             if vlines:
                 jx = jx + "\n" + "\n".join(vlines) + "\n"
         await _yield0()
         # Optionally include last sandbox run artifacts (stdout/stderr/status) via macros
-        try:
-            include_run = str(os.getenv("JINX_AUTOMACRO_RUN_EXPORTS", "1")).lower() not in ("", "0", "false", "off", "no")
-        except Exception:
-            include_run = True
-        if include_run and ("{{m:run:" not in jx):
+        if ("{{m:run:" not in jx):
             rlines = await _run_exports_lines(None)
             if rlines:
                 jx = jx + "\n" + "\n".join(rlines) + "\n"
@@ -208,10 +256,7 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
                     except Exception:
                         pass
                     setattr(spark_openai, "_macro_inited", True)
-        try:
-            max_exp = int(os.getenv("JINX_PROMPT_MACRO_MAX", "50"))
-        except Exception:
-            max_exp = 50
+        max_exp = _PROMPT_MACRO_MAX
         
         # Check for macros in prompt
         import re
@@ -251,7 +296,7 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
         pass
     # Dynamic context guide for burning_logic prompt only
     try:
-        active_prompt = (prompt_override or os.getenv("JINX_PROMPT") or os.getenv("PROMPT_NAME") or "burning_logic")
+        active_prompt = (prompt_override or _DEFAULT_PROMPT)
         if active_prompt.strip().lower() == "burning_logic":
             # Detect all context tags present in final composed prompt
             import re as _re
@@ -272,7 +317,7 @@ async def _prepare_request(txt: str, *, prompt_override: str | None = None) -> t
                 jx = "\n".join(lines)
     except Exception:
         pass
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+    model = _DEFAULT_MODEL
     # Sanitize prompts to avoid leaking internal .jinx paths/content
     sx = sanitize_prompt_for_external_api(jx)
     return jx, tag, model, sx, stxt
@@ -339,9 +384,11 @@ async def spark_openai(txt: str, *, prompt_override: str | None = None) -> tuple
             pass
         return (out, tag)
 
-    # Avoid duplicate outbound API calls on post-call exceptions by disabling retries here.
-    # Lower-level resiliency is provided by caching/coalescing/multi-path logic.
-    return await detonate_payload(openai_task, retries=1)
+    try:
+        return await detonate_payload(openai_task, retries=1)
+    except Exception:
+        out = f"<python_{tag}>\nprint(\"Jinx offline: LLM unavailable.\")\n</python_{tag}>"
+        return (out, tag)
 
 
 async def spark_openai_streaming(txt: str, *, prompt_override: str | None = None, on_first_block=None) -> tuple[str, str]:
@@ -407,4 +454,8 @@ async def spark_openai_streaming(txt: str, *, prompt_override: str | None = None
             pass
         return (out, tag)
 
-    return await detonate_payload(openai_task, retries=1)
+    try:
+        return await detonate_payload(openai_task, retries=1)
+    except Exception:
+        out = f"<python_{tag}>\nprint(\"Jinx offline: LLM unavailable.\")\n</python_{tag}>"
+        return (out, tag)

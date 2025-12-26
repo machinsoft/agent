@@ -13,32 +13,112 @@ Advanced features:
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Callable, Any
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import threading
+import weakref
 
 # --- Advanced State Management ---
 
+class _LoopBoundLock:
+    def __init__(self) -> None:
+        self._locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+    def _get(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop: create a best-effort lock bound to the current default loop
+            loop = asyncio.get_event_loop()
+        lk = self._locks.get(loop)
+        if lk is None:
+            lk = asyncio.Lock()
+            self._locks[loop] = lk
+        return lk
+
+    async def acquire(self) -> bool:
+        return await self._get().acquire()
+
+    def release(self) -> None:
+        return self._get().release()
+
+    def locked(self) -> bool:
+        return self._get().locked()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+        return False
+
+
+class _LoopBoundEvent:
+    def __init__(self) -> None:
+        self._events: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event]" = weakref.WeakKeyDictionary()
+        self._flag: bool = False
+
+    def _get(self) -> tuple[asyncio.AbstractEventLoop, asyncio.Event]:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        ev = self._events.get(loop)
+        if ev is None:
+            ev = asyncio.Event()
+            if self._flag:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+            self._events[loop] = ev
+        return loop, ev
+
+    def is_set(self) -> bool:
+        return bool(self._flag)
+
+    def set(self) -> None:
+        self._flag = True
+        # Best-effort propagate to known loops
+        for loop, ev in list(self._events.items()):
+            try:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(ev.set)
+                else:
+                    ev.set()
+            except Exception:
+                pass
+
+    def clear(self) -> None:
+        self._flag = False
+        for loop, ev in list(self._events.items()):
+            try:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(ev.clear)
+                else:
+                    ev.clear()
+            except Exception:
+                pass
+
+    async def wait(self) -> bool:
+        if self._flag:
+            return True
+        _loop, ev = self._get()
+        await ev.wait()
+        return True
+
+
 # Shared async lock (reentrant for nested calls)
-shard_lock: asyncio.Lock = asyncio.Lock()
+shard_lock: Any = _LoopBoundLock()
 
 # Thread-safe lock for synchronous access
 _sync_lock = threading.RLock()
 
 # Global mutable state with safe defaults and validation
-try:
-    _pulse_raw = int(os.getenv("PULSE", "100"))
-    pulse: int = max(20, min(10000, _pulse_raw))  # Clamped to safe range
-except (ValueError, TypeError):
-    pulse: int = 100
-
-try:
-    _timeout_raw = int(os.getenv("TIMEOUT", "30"))
-    boom_limit: int = max(5, min(86400, _timeout_raw))  # 5 sec to 24 hours
-except (ValueError, TypeError):
-    boom_limit: int = 30
+pulse: int = 100
+boom_limit: int = 30
 
 # Human-readable activity description shown by spinner (set by pipeline)
 activity: str = ""
@@ -54,12 +134,23 @@ activity_detail_ts: float = 0.0
 # Used to pause the <no_response> timer after a reply so the user gets the full TIMEOUT window.
 last_agent_reply_ts: float = 0.0
 
-# Global shutdown event set when pulse depletes or an emergency stop is requested
-shutdown_event: asyncio.Event = asyncio.Event()
+# Whether the current UI loop is using prompt_toolkit PromptSession (toolbar available).
+ui_prompt_toolkit: bool = False
 
-# Throttle event used by autotune to signal system saturation.
-# Components may slow down or defer heavy work while this is set.
-throttle_event: asyncio.Event = asyncio.Event()
+# Whether the user is currently in an active input() prompt (simple input mode).
+# Used to prevent the line spinner from overwriting the user's typing.
+ui_input_active: bool = False
+
+# Whether the system is currently printing multi-line output.
+# Used so the line spinner can pause rendering while output is emitted.
+ui_output_active: bool = False
+
+# In-process gate for StateCompiler LLM (replaces env-driven JINX_STATE_COMPILER_LLM).
+state_compiler_llm_on: bool = False
+
+shutdown_event: Any = _LoopBoundEvent()
+
+throttle_event: Any = _LoopBoundEvent()
 
 # --- Advanced State Observers (Event Bus Pattern) ---
 

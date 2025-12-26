@@ -19,10 +19,7 @@ _monitor_task: asyncio.Task | None = None
 
 
 def _enabled() -> bool:
-    try:
-        return str(os.getenv("JINX_RESILIENCE", "1")).strip().lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        return True
+    return True
 
 
 def _record_missing(name: str) -> None:
@@ -148,10 +145,7 @@ def start_resilience_monitor_task(period_s: Optional[float] = None) -> asyncio.T
     global _monitor_task
     if _monitor_task and not _monitor_task.done():
         return _monitor_task
-    try:
-        p = float(os.getenv("JINX_RESILIENCE_MONITOR_SEC", "45")) if period_s is None else float(period_s)
-    except Exception:
-        p = 45.0
+    p = 45.0 if period_s is None else float(period_s)
 
     async def _loop() -> None:
         while True:

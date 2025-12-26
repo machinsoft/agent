@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-import os
 from typing import List
 import re
 from jinx.micro.text.heuristics import is_code_like as _is_code_like
+
+_USE_DLG = True
+_USE_PROJ = True
+_DLG_K = 3
+_PROJ_K = 3
+_USE_MEM = True
+_MEM_COMP_K = 8
+_MEM_EVER_K = 8
+_CODE_ON = True
+_CODE_TOPK = 8
 
 
 async def auto_context_lines(input_text: str) -> List[str]:
@@ -15,35 +24,14 @@ async def auto_context_lines(input_text: str) -> List[str]:
     txt = (input_text or "").strip()
     codey = _is_code_like(txt)
     # feature flags
-    try:
-        use_dlg = str(os.getenv("JINX_AUTOMACRO_DIALOGUE", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        use_dlg = True
-    try:
-        use_proj = str(os.getenv("JINX_AUTOMACRO_PROJECT", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        use_proj = True
-    try:
-        dlg_k = int(os.getenv("JINX_AUTOMACRO_DIALOGUE_K", "3"))
-    except Exception:
-        dlg_k = 3
-    try:
-        proj_k = int(os.getenv("JINX_AUTOMACRO_PROJECT_K", "3"))
-    except Exception:
-        proj_k = 3
+    use_dlg = _USE_DLG
+    use_proj = _USE_PROJ
+    dlg_k = _DLG_K
+    proj_k = _PROJ_K
     # Memory automacros
-    try:
-        use_mem = str(os.getenv("JINX_AUTOMACRO_MEMORY", "1").lower()) not in ("", "0", "false", "off", "no")
-    except Exception:
-        use_mem = True
-    try:
-        mem_comp_k = int(os.getenv("JINX_AUTOMACRO_MEM_COMPACT_K", "8"))
-    except Exception:
-        mem_comp_k = 8
-    try:
-        mem_ever_k = int(os.getenv("JINX_AUTOMACRO_MEM_EVERGREEN_K", "8"))
-    except Exception:
-        mem_ever_k = 8
+    use_mem = _USE_MEM
+    mem_comp_k = _MEM_COMP_K
+    mem_ever_k = _MEM_EVER_K
 
     # Heuristic preference: project for code-like, dialogue for natural text
     if use_dlg:
@@ -66,10 +54,7 @@ async def auto_code_lines(input_text: str) -> List[str]:
     Gate with JINX_AUTOMACRO_CODE (default ON). Extract the most salient token
     from code-like input or from the first callable pattern in text.
     """
-    try:
-        on = str(os.getenv("JINX_AUTOMACRO_CODE", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = True
+    on = _CODE_ON
     if not on:
         return []
     txt = (input_text or "").strip()
@@ -87,10 +72,7 @@ async def auto_code_lines(input_text: str) -> List[str]:
             token = ids[0]
     if not token or len(token) < 3:
         return []
-    try:
-        topk = max(1, int(os.getenv("JINX_MACRO_CODE_TOPK", "8")))
-    except Exception:
-        topk = 8
+    topk = _CODE_TOPK
     # Build usage + def lines; def is small by default
     lines = [
         f"Code usage: {{{{m:code:usage:{token}:{topk}}}}}",

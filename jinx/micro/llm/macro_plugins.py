@@ -36,23 +36,17 @@ async def _call_register(mod, reg: Callable[[str, callable], Awaitable[None]]) -
 
 
 async def load_macro_plugins() -> None:
-    """Load macro provider plugins from JINX_MACRO_PLUGIN_DIR (default: jinx/plugins/macros).
+    """Load macro provider plugins from a fixed repo-relative directory.
 
     Each plugin module may expose `register(register_macro)` or `setup(register_macro)` and
     should call the provided function to register macros. Errors are swallowed.
     """
-    try:
-        on = str(os.getenv("JINX_MACRO_PLUGINS", "1")).lower() not in ("", "0", "false", "off", "no")
-    except Exception:
-        on = True
-    if not on:
-        return
     # Compute default plugin directory under repo: jinx/plugins/macros
     try:
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # .../jinx
     except Exception:
         return
-    plugin_dir = os.getenv("JINX_MACRO_PLUGIN_DIR", os.path.join(base, "plugins", "macros"))
+    plugin_dir = os.path.join(base, "plugins", "macros")
     try:
         if not os.path.isdir(plugin_dir):
             return

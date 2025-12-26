@@ -9,7 +9,7 @@ and the async runtime core.
 from __future__ import annotations
 
 import asyncio
-from jinx.bootstrap import load_env, ensure_optional
+from jinx.bootstrap import load_env
 
 
 def main() -> None:
@@ -19,11 +19,25 @@ def main() -> None:
     standard CLI entrypoints without requiring the caller to manage an event
     loop.
     """
+    def _record(op: str, **kwargs) -> None:
+        try:
+            from jinx.micro.runtime.crash_diagnostics import record_operation as _rec
+            _rec(op, **kwargs)
+        except Exception:
+            pass
+
+    def _mark(reason: str) -> None:
+        try:
+            from jinx.micro.runtime.crash_diagnostics import mark_normal_shutdown as _mark_normal
+            _mark_normal(reason)
+        except Exception:
+            pass
+
     # Install crash diagnostics FIRST
     try:
-        from jinx.micro.runtime.crash_diagnostics import install_crash_diagnostics, record_operation
+        from jinx.micro.runtime.crash_diagnostics import install_crash_diagnostics
         install_crash_diagnostics()
-        record_operation("startup", details={'stage': 'orchestrator'}, success=True)
+        _record("startup", details={'stage': 'orchestrator'}, success=True)
     except Exception:
         pass
     
@@ -55,32 +69,28 @@ def main() -> None:
     # Ensure environment variables (e.g., OPENAI_API_KEY) are loaded from .env
     load_env()
     # Ensure runtime optional deps are present before importing runtime_service
-    ensure_optional([
-        "aiofiles",      # async file IO used by runtime
-        "regex",         # fuzzy regex stage
-        "rapidfuzz",     # fuzzy line matching
-        "jedi",          # Python identifier references
-        "libcst",        # CST structural patterns
-        "astunparse",    # pretty-printing annotations (optional)
-        "numpy",         # embeddings/vector ops, ML orchestrator
-    ])
+    pass
+
+    try:
+        from jinx.micro.runtime.startup_checks import run_startup_checks as _startup_checks
+        _startup_checks(stage="post")
+    except Exception:
+        pass
 
     # Defer import until after dependencies are ensured to avoid early import errors
     from jinx.runtime_service import pulse_core
 
     try:
-        record_operation("runtime_start", success=True)
+        _record("runtime_start", success=True)
         asyncio.run(pulse_core())
-        record_operation("runtime_end", success=True)
+        _record("runtime_end", success=True)
         
         # Mark as normal shutdown
-        from jinx.micro.runtime.crash_diagnostics import mark_normal_shutdown
-        mark_normal_shutdown("normal_completion")
+        _mark("normal_completion")
     except KeyboardInterrupt:
-        record_operation("runtime_interrupted", details={'reason': 'KeyboardInterrupt'}, success=True)
-        from jinx.micro.runtime.crash_diagnostics import mark_normal_shutdown
-        mark_normal_shutdown("keyboard_interrupt")
+        _record("runtime_interrupted", details={'reason': 'KeyboardInterrupt'}, success=True)
+        _mark("keyboard_interrupt")
         raise
     except Exception as e:
-        record_operation("runtime_error", details={'error': str(e)}, success=False, error=str(e))
+        _record("runtime_error", details={'error': str(e)}, success=False, error=str(e))
         raise

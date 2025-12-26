@@ -12,6 +12,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+_SMART_CACHE_MB = 100
+_SMART_CACHE_ENTRIES = 1000
 
 @dataclass
 class CacheEntry:
@@ -245,9 +247,7 @@ async def get_smart_cache() -> SmartCache:
     if _smart_cache is None:
         async with _cache_lock:
             if _smart_cache is None:
-                max_size = int(os.getenv('JINX_SMART_CACHE_MB', '100'))
-                max_entries = int(os.getenv('JINX_SMART_CACHE_ENTRIES', '1000'))
-                _smart_cache = SmartCache(max_size_mb=max_size, max_entries=max_entries)
+                _smart_cache = SmartCache(max_size_mb=_SMART_CACHE_MB, max_entries=_SMART_CACHE_ENTRIES)
     return _smart_cache
 
 

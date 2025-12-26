@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List
 
 
 def truthy_env(name: str, default: str = "0") -> bool:
-    v = os.getenv(name, default)
+    v = default
     return str(v).lower() not in ("", "0", "false", "off", "no")
 
 
@@ -38,29 +37,15 @@ def parse_planner_block(body: str) -> Dict[str, Any]:
         advice.do.N, advice.avoid.N, clarify.N, reminder.N, assume.N, context.N
     """
     # Env-tunable limits (counts only; lengths are free-form)
-    try:
-        max_plan = max(1, int(os.getenv("JINX_CHAINED_MAX_STEPS", "3")))
-    except Exception:
-        max_plan = 3
-    try:
-        max_subs = max(0, int(os.getenv("JINX_CHAINED_MAX_SUBS", "2")))
-    except Exception:
-        max_subs = 2
-    try:
-        max_risks = max(0, int(os.getenv("JINX_CHAINED_MAX_RISKS", "3")))
-    except Exception:
-        max_risks = 3
+    max_plan = 3
+    max_subs = 2
+    max_risks = 3
     # Advisory extras limits
-    def _lim(name: str, default: str) -> int:
-        try:
-            return max(0, int(os.getenv(name, default)))
-        except Exception:
-            return int(default)
-    max_adv = _lim("JINX_CHAINED_MAX_ADVICE", "4")
-    max_clr = _lim("JINX_CHAINED_MAX_CLARIFY", "4")
-    max_rem = _lim("JINX_CHAINED_MAX_REMIND", "4")
-    max_ctx = _lim("JINX_CHAINED_MAX_CONTEXT", "4")
-    max_asm = _lim("JINX_CHAINED_MAX_ASSUME", "4")
+    max_adv = 4
+    max_clr = 4
+    max_rem = 4
+    max_ctx = 4
+    max_asm = 4
 
     goal = ""
     note = ""

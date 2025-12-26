@@ -6,7 +6,6 @@ Production-grade orchestration with ML enhancement, real-time constraints, and a
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -233,25 +232,29 @@ class ChainOrchestrator:
         """Build enhanced context with brain systems."""
         # Query expansion
         expanded_query = None
-        if os.getenv('JINX_BRAIN_ENHANCE', '1') in ('1', 'true', 'on'):
+        try:
             from jinx.micro.brain import expand_query
             expanded_result = await expand_query(user_text)
             if expanded_result and expanded_result.confidence > 0.6:
                 expanded_query = expanded_result.expanded
+        except Exception:
+            expanded_query = None
         
         # Search memories for context
         embeddings = {}
-        if os.getenv('JINX_BRAIN_MEMORY_SEARCH', '1') in ('1', 'true', 'on'):
+        try:
             from jinx.micro.brain import search_all_memories
             memories = await search_all_memories(user_text, k=5)
             embeddings['memories'] = [
                 {'content': m.content, 'importance': m.importance}
                 for m in memories
             ]
+        except Exception:
+            embeddings = {}
         
         # Get brain suggestions
         brain_suggestions = []
-        if os.getenv('JINX_BRAIN_SUGGESTIONS', '1') in ('1', 'true', 'on'):
+        try:
             from jinx.micro.brain import get_knowledge_graph
             kg = await get_knowledge_graph()
             nodes = await kg.query_patterns(user_text, 'similar')
@@ -259,13 +262,17 @@ class ChainOrchestrator:
                 (str(node.get('data')), node.get('confidence', 0.5))
                 for node in nodes[:3]
             ]
+        except Exception:
+            brain_suggestions = []
         
         # ML parameters
         ml_params = {}
-        if os.getenv('JINX_BRAIN_ML_PARAMS', '1') in ('1', 'true', 'on'):
+        try:
             from jinx.micro.brain import select_retrieval_params
             k, timeout = await select_retrieval_params(user_text, {})
             ml_params = {'k': k, 'timeout_ms': timeout}
+        except Exception:
+            ml_params = {}
         
         return ChainContext(
             user_text=user_text,
@@ -315,7 +322,7 @@ class ChainOrchestrator:
                 self._execution_history = self._execution_history[-100:]
         
         # Record to brain systems
-        if os.getenv('JINX_BRAIN_RECORD', '1') in ('1', 'true', 'on'):
+        try:
             from jinx.micro.brain import record_outcome
             await record_outcome(
                 'llm_chain',
@@ -323,6 +330,8 @@ class ChainOrchestrator:
                 {'quality': quality},
                 latency_ms=latency_ms
             )
+        except Exception:
+            pass
     
     def get_stats(self) -> Dict[str, Any]:
         """Get orchestrator statistics."""

@@ -8,7 +8,6 @@ friendly, and side-effect contained for testability.
 from __future__ import annotations
 
 import asyncio
-import os
 from jinx.banner_service import show_banner
 import concurrent.futures as _cf
 from jinx.utils import chaos_patch
@@ -40,7 +39,6 @@ from jinx.micro.runtime.plugins import (
     publish_event as _publish_event,
 )
 from jinx.micro.runtime.builtin_plugins import register_builtin_plugins as _reg_builtin_plugins
-from jinx.micro.runtime.autoconfig import apply_auto_defaults as _auto_defaults
 from jinx.micro.runtime.self_update_handshake import set_online as _hs_online, set_healthy as _hs_healthy
 
 async def pulse_core(settings: Settings | None = None) -> None:
@@ -55,13 +53,8 @@ async def pulse_core(settings: Settings | None = None) -> None:
     """
     show_banner()
 
-    # Autonomous defaults (no manual setup required)
-    try:
-        _auto_defaults(settings)
-    except Exception:
-        pass
-    # Resolve settings and apply compatibility state
-    cfg = settings or Settings.from_env()
+    # Resolve settings deterministically
+    cfg = settings or Settings()
     cfg.apply_to_state()
     # Start reproducibility recorder (best-effort)
     _run_id = None
@@ -81,13 +74,12 @@ async def pulse_core(settings: Settings | None = None) -> None:
         pass
     # Startup healthcheck to BLUE_WHISPERS
     try:
-        import os as _os
         from jinx.logger.file_logger import append_line as _append
         from jinx.log_paths import BLUE_WHISPERS
-        ak_on = bool((_os.getenv("OPENAI_API_KEY") or _os.getenv("AZURE_OPENAI_API_KEY") or "").strip())
-        model = (_os.getenv("OPENAI_MODEL") or cfg.openai.model or "").strip() or "?"
-        proxy = (_os.getenv("PROXY") or _os.getenv("HTTPS_PROXY") or _os.getenv("HTTP_PROXY") or "").strip()
-        conc = (_os.getenv("JINX_FRAME_MAX_CONC") or "2").strip()
+        ak_on = bool((cfg.openai.api_key or "").strip())
+        model = (cfg.openai.model or "").strip() or "?"
+        proxy = (cfg.openai.proxy or "").strip()
+        conc = "2"
         prio = ("on" if cfg.runtime.use_priority_queue else "off")
         await _append(BLUE_WHISPERS, f"[health] api_key={'present' if ak_on else 'absent'} model={model} proxy={'set' if proxy else 'none'} conc={conc} prio={prio}")
     except Exception:
@@ -137,66 +129,22 @@ async def pulse_core(settings: Settings | None = None) -> None:
             SupervisedJob(name="watchdog", start=lambda: start_watchdog_task(cfg)),
         ]
         
-        # Add self-healing and health monitoring (if enabled)
+        # Add self-healing and health monitoring
         try:
-            if str(os.getenv("JINX_SELF_HEALING", "1")).lower() not in ("", "0", "false", "off", "no"):
-                from jinx.micro.runtime.health_monitor import start_health_monitoring
-                
-                async def _start_health():
-                    await start_health_monitoring()
-                    # Keep alive
-                    while not jx_state.shutdown_event.is_set():
-                        await asyncio.sleep(1.0)
-                    return None
-                
-                job_specs.append(
-                    SupervisedJob(name="health-monitor", start=lambda: asyncio.create_task(_start_health()))
-                )
+            from jinx.micro.runtime.health_monitor import start_health_monitoring
+            
+            async def _start_health():
+                await start_health_monitoring()
+                while not jx_state.shutdown_event.is_set():
+                    await asyncio.sleep(1.0)
+                return None
+            
+            job_specs.append(
+                SupervisedJob(name="health-monitor", start=lambda: asyncio.create_task(_start_health()))
+            )
         except Exception:
             pass
         
-        # === INITIALIZE ML SYSTEM ===
-        try:
-            if str(os.getenv("JINX_ML_SYSTEM", "1")).lower() not in ("", "0", "false", "off", "no"):
-                from jinx.micro.runtime.ml_orchestrator import get_ml_orchestrator
-                from jinx.micro.runtime.performance_optimizer import get_performance_optimizer
-                from jinx.micro.runtime.auto_scaler import get_auto_scaler
-                from jinx.micro.runtime.startup_validator import validate_ml_system
-                
-                # Validate ML system on startup
-                success, validation_report = await validate_ml_system()
-                
-                if success:
-                    # Initialize ML orchestrator (coordinates all ML components)
-                    asyncio.create_task(get_ml_orchestrator())
-                    
-                    # Initialize performance optimizer
-                    asyncio.create_task(get_performance_optimizer())
-                    
-                    # Initialize auto scaler (load balancing + circuit breaker)
-                    asyncio.create_task(get_auto_scaler())
-                else:
-                    # Log validation failure but continue (graceful degradation)
-                    try:
-                        from jinx.micro.logger.debug_logger import debug_log
-                        await debug_log(
-                            f"ML System validation failed - running in degraded mode",
-                            "STARTUP"
-                        )
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        
-        # Initialize dynamic configuration plugin (AI-powered auto-tuning)
-        try:
-            if str(os.getenv("JINX_DYNAMIC_CONFIG", "1")).lower() not in ("", "0", "false", "off", "no"):
-                from jinx.micro.runtime.dynamic_config_plugin import get_dynamic_config_plugin
-                
-                asyncio.create_task(get_dynamic_config_plugin())
-        except Exception:
-            pass
-
         try:
             # Start optional plugins prior to supervised
             with contextlib.suppress(Exception):

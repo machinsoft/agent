@@ -6,14 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-from jinx.bootstrap import package
 from jinx.micro.common.cache import LruCache, sha1_digest
 try:
     from PIL import Image  # type: ignore
 except Exception:
-    # Install Pillow to provide the PIL module, then import
-    package("Pillow")
-    from PIL import Image  # type: ignore
+    Image = None  # type: ignore
 
 # Bounds mirror Rust constants
 MAX_WIDTH: int = 2048
@@ -66,6 +63,8 @@ def _read_file_bytes(path: Path) -> bytes:
 
 
 def load_and_resize_to_fit(path: str | Path) -> EncodedImage:
+    if Image is None:
+        raise RuntimeError("Optional dependency missing: Pillow (PIL)")
     p = Path(path)
     data = _read_file_bytes(p)
     key = sha1_digest(data)

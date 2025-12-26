@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import time
 from typing import Any, Dict, Optional, Tuple, List
 from threading import Lock as _TLock
@@ -12,36 +11,45 @@ from jinx.net import get_openai_client
 from jinx.micro.parser.api import parse_tagged_blocks as _parse_blocks
 import re as _re
 
+# AutoBrain adaptive configuration
+try:
+    from jinx.micro.runtime.autobrain_config import (
+        get_int as _ab_int,
+        get as _ab_get,
+        record_outcome as _ab_record,
+    )
+    _AB_AVAILABLE = True
+except Exception:
+    _AB_AVAILABLE = False
+    def _ab_int(name: str, ctx=None) -> int:
+        return {"llm_max_conc": 4, "llm_timeout_ms": 20000}.get(name, 4)
+    def _ab_get(name: str, ctx=None) -> float:
+        return 4.0
+    def _ab_record(name: str, success: bool, latency_ms: float = 0, ctx=None) -> None:
+        pass
+
 # TTL cache + request coalescing + concurrency limiting + timeouts for LLM Responses API
 # Keyed by a stable fingerprint of (instructions, model, input_text, extra_kwargs)
 
-try:
-    _TTL_SEC = float(os.getenv("JINX_LLM_TTL_SEC", "300"))  # 5 minutes default
-except Exception:
-    _TTL_SEC = 300.0
-try:
-    _TIMEOUT_MS = int(os.getenv("JINX_LLM_TIMEOUT_MS", "20000"))  # 20s default
-except Exception:
-    _TIMEOUT_MS = 20000
-try:
-    _MAX_CONC = int(os.getenv("JINX_LLM_MAX_CONCURRENCY", "4"))
-except Exception:
-    _MAX_CONC = 4
+_TTL_SEC = 300.0
+_TIMEOUT_MS = 20000
+_MAX_CONC = 4
 
 # Family rate limiting (requests per window per normalized family key)
-try:
-    _FAM_RATE = int(os.getenv("JINX_LLM_FAMILY_RATE", "3"))
-except Exception:
-    _FAM_RATE = 3
-try:
-    _FAM_WIN = float(os.getenv("JINX_LLM_FAMILY_RATE_WINDOW_SEC", "5.0"))
-except Exception:
-    _FAM_WIN = 5.0
-_FAM_DROP = str(os.getenv("JINX_LLM_FAMILY_RATE_DROP", "1")).lower() in {"1", "true", "on", "yes"}
+_FAM_RATE = 3
+_FAM_WIN = 5.0
+_FAM_DROP = True
 
 _FAMILY_RATE_LIMITER: Dict[str, List[float]] = {}
 
-_DUMP = str(os.getenv("JINX_LLM_DUMP", "0")).lower() in {"1", "true", "on", "yes"}
+_DUMP = False
+
+_FPR_NORMALIZE = True
+_FAM_CACHE_ON = True
+_HARD_TIMEOUT_MS = 30000
+_MULTI_SAMPLES = 1
+_MULTI_HEDGE_MS = 0
+_MULTI_CANCEL_LOSERS = True
 
 _mem: Dict[str, Tuple[float, str]] = {}
 _inflight: Dict[str, asyncio.Future] = {}
@@ -50,6 +58,20 @@ _family_mem: Dict[str, Tuple[float, str]] = {}
 _family_recent: Dict[str, List[float]] = {}
 _inflight_tlock: _TLock = _TLock()
 _sem = asyncio.Semaphore(max(1, _MAX_CONC))
+
+
+def _now() -> float:
+    try:
+        return time.time()
+    except Exception:
+        return 0.0
+
+
+def _ensure_non_empty(s: str) -> str:
+    t = str(s or "")
+    if t.strip():
+        return t
+    return "<llm_empty>\nOpenAI returned an empty response.\n</llm_empty>"
 
 
 def _safe_jsonable(obj: Any, depth: int = 0) -> Any:
@@ -85,11 +107,7 @@ def _normalize_for_fingerprint(s: str) -> str:
     - Drop repeated paragraphs (>= 200 chars) keeping first occurrence
     - Trim to a conservative budget to cap key size
     """
-    try:
-        on = (os.getenv("JINX_LLM_FINGERPRINT_NORMALIZE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        on = True
-    if not on:
+    if not _FPR_NORMALIZE:
         return s or ""
     t = (s or "").replace("\r\n", "\n").replace("\r", "\n")
     t = _re.sub(r"\n{3,}", "\n\n", t)
@@ -218,20 +236,17 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
     if item is not None:
         exp, val = item
         if exp >= _now():
-            return val
+            return _ensure_non_empty(val)
         else:
             _mem.pop(key, None)
     # Family-level TTL cache (optional): serve recent result regardless of extra kwargs
-    try:
-        fam_cache_on = (os.getenv("JINX_LLM_FAMILY_CACHE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        fam_cache_on = True
+    fam_cache_on = _FAM_CACHE_ON
     if fam_cache_on:
         fitem = _family_mem.get(fam_key)
         if fitem is not None:
             fexp, fval = fitem
             if fexp >= _now():
-                return fval
+                return _ensure_non_empty(fval)
             else:
                 _family_mem.pop(fam_key, None)
 
@@ -244,21 +259,32 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
         if existing_fam is not None:
             try:
                 res = await existing_fam
-                return str(res or "")
+                return _ensure_non_empty(str(res or ""))
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 pass
         # Serve recent family cache if any
         if fam_cache_on:
             fitem = _family_mem.get(fam_key)
             if fitem is not None and fitem[0] >= _now():
-                return fitem[1]
-        # Drop softly by default to protect tokens
-        if _FAM_DROP:
-            return ""
+                return _ensure_non_empty(fitem[1])
+        # Avoid silent drops: wait briefly for the window to open; fall back to a visible marker.
+        try:
+            q = _family_recent.get(fam_key) or []
+            wait_s = (max(0.0, float(q[0] + _FAM_WIN - _now())) if q else float(_FAM_WIN))
+            wait_s = min(wait_s, float(_FAM_WIN), 10.0)
+        except Exception:
+            wait_s = min(float(_FAM_WIN), 1.0)
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        if not _family_allow(fam_key):
+            return "<llm_rate_limited>\nLocal rate limiter engaged; please retry in a moment.\n</llm_rate_limited>"
 
     # Coalescing (with race-free creation)
     loop = asyncio.get_running_loop()
     to_wait: asyncio.Future | None = None
+    fut: asyncio.Future
     # Cross-thread safe critical section for inflight maps
     with _inflight_tlock:
         # Exact-key inflight first
@@ -279,10 +305,20 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
     if to_wait is not None:
         try:
             res = await to_wait
-            return str(res or "")
-        except Exception:
-            # If the inflight failed, continue to execute fresh
-            pass
+            return _ensure_non_empty(str(res or ""))
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            if _is_forbidden_region(ex):
+                return "<llm_forbidden_region>\nOpenAI is not available in this region.\n</llm_forbidden_region>"
+            if _is_rate_limited(ex):
+                return "<llm_rate_limited>\nOpenAI rate limited the request; please retry shortly.\n</llm_rate_limited>"
+            # If the inflight failed, continue to execute fresh with a new future
+            with _inflight_tlock:
+                fut = loop.create_future()
+                _inflight[key] = fut
+                if not no_family:
+                    _family_inflight[fam_key] = fut
     soft_timeout = False
     async with _sem:
         await _dump_line(f"call key={key[:8]} model={model} ilen={len(instructions)} tlen={len(input_text)}")
@@ -309,7 +345,7 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
                         fut.set_exception(asyncio.CancelledError())
                     return
                 r = t.result()
-                out = str(getattr(r, "output_text", ""))
+                out = _ensure_non_empty(str(getattr(r, "output_text", "")))
                 expiry = _now() + max(1.0, _TTL_SEC)
                 _mem[key] = (expiry, out)
                 if fam_cache_on:
@@ -364,7 +400,7 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
                 else:
                     await _dump_line(f"task_failed:{type(ex).__name__}")
             else:
-                out = str(getattr(r, "output_text", ""))
+                out = _ensure_non_empty(str(getattr(r, "output_text", "")))
                 # Callback will also set cache/fut and pop inflight; just return out here
                 return out
         else:
@@ -375,21 +411,50 @@ async def call_openai_cached(instructions: str, model: str, input_text: str, *, 
     if soft_timeout:
         await _dump_line("awaiting inflight outside semaphore")
         try:
-            res = await fut
-            return str(res or "")
+            try:
+                res = await asyncio.wait_for(fut, timeout=max(0.1, float(_HARD_TIMEOUT_MS) / 1000.0))
+                return _ensure_non_empty(str(res or ""))
+            except asyncio.TimeoutError:
+                # Hard timeout: release waiters and avoid infinite hang if SDK thread is stuck.
+                tout = "<llm_timeout>\nOpenAI call timed out.\n</llm_timeout>"
+                try:
+                    if not fut.done():
+                        fut.set_result(tout)
+                except Exception:
+                    pass
+                try:
+                    # Best-effort: clear inflight maps so future calls can retry.
+                    with _inflight_tlock:
+                        _inflight.pop(key, None)
+                        if not no_family:
+                            _family_inflight.pop(fam_key, None)
+                except Exception:
+                    pass
+                await _dump_line("hard_timeout")
+                return tout
         except BaseException as ex:
             # Propagate the underlying error if the background task failed
             if _is_forbidden_region(ex) or _is_rate_limited(ex):
+                msg = (
+                    "<llm_forbidden_region>\nOpenAI is not available in this region.\n</llm_forbidden_region>"
+                    if _is_forbidden_region(ex)
+                    else "<llm_rate_limited>\nOpenAI rate limited the request; please retry shortly.\n</llm_rate_limited>"
+                )
                 # Negative cache for a short period to avoid rapid retries.
                 try:
                     nexp = _now() + min(60.0, max(1.0, _TTL_SEC))
-                    _mem[key] = (nexp, "")
+                    _mem[key] = (nexp, msg)
                     if fam_cache_on:
-                        _family_mem[fam_key] = (nexp, "")
+                        _family_mem[fam_key] = (nexp, msg)
                 except Exception:
                     pass
                 await _dump_line("provider_soft_block")
-                return ""
+                try:
+                    if not fut.done():
+                        fut.set_result(msg)
+                except Exception:
+                    pass
+                return msg
             raise ex
 
 async def call_openai_multi_validated(
@@ -406,22 +471,13 @@ async def call_openai_multi_validated(
     - Validation: output must contain exactly one <python_{code_id}> block.
     - Does not cancel in-flight calls so they can populate the TTL cache for future turns.
     """
-    try:
-        n = max(1, int(os.getenv("JINX_LLM_MULTI_SAMPLES", "1")))
-    except Exception:
-        n = 1
+    n = max(1, int(_MULTI_SAMPLES))
     # Conservative small variations
     temps_all: List[float] = [0.2, 0.5, 0.8, 0.3, 0.7]
     temps = temps_all[:max(1, n)]
     extra = dict(base_extra_kwargs or {})
-    try:
-        hedge_ms = int(os.getenv("JINX_LLM_MULTI_HEDGE_MS", "0"))
-    except Exception:
-        hedge_ms = 0
-    try:
-        cancel_losers = (os.getenv("JINX_LLM_MULTI_CANCEL", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        cancel_losers = True
+    hedge_ms = int(_MULTI_HEDGE_MS)
+    cancel_losers = bool(_MULTI_CANCEL_LOSERS)
 
     async def _one(t: float, register_family: bool) -> str:
         kw = dict(extra)

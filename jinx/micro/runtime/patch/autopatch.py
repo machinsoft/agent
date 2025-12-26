@@ -26,6 +26,12 @@ from .symbol_patch_generic import patch_symbol_generic as _patch_symbol_generic
 from jinx.micro.brain.concepts import record_reinforcement as _brain_reinf
 from jinx.micro.embeddings.symbol_index import query_symbol_index as _sym_query
 from jinx.micro.common.env import truthy as _truthy
+from jinx.micro.runtime.autobrain_config import (
+    get_int as _ab_int,
+    get as _ab_get,
+    record_outcome as _ab_record,
+    TaskContext as _AbTaskCtx,
+)
 try:
     from jinx.observability.metrics import record_patch_event as _rec_patch  # type: ignore
 except Exception:
@@ -105,17 +111,12 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
     path = args.path or ""
     code = args.code or ""
     start_ts = time.monotonic()
-    try:
-        max_ms = int(os.getenv("JINX_AUTOPATCH_MAX_MS", "900"))
-    except Exception:
-        max_ms = 900
+    # Adaptive configuration from AutoBrain
+    max_ms = _ab_int("autopatch_max_ms")
     # Exhaustive mode: disable timeboxing and search caps if enabled
     no_budgets = _truthy("JINX_AUTOPATCH_NO_BUDGETS", "1")
     max_ms_local = None if no_budgets else max_ms
-    try:
-        search_k = int(os.getenv("JINX_AUTOPATCH_SEARCH_TOPK", "4"))
-    except Exception:
-        search_k = 4
+    search_k = _ab_int("autopatch_search_topk")
 
     # Resolve project root once
     ROOT = _resolve_root()
@@ -126,8 +127,8 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
     if exp_query:
         try:
             if _truthy("EMBED_BRAIN_ENABLE", "1"):
-                btop = max(4, int(os.getenv("EMBED_BRAIN_TOP_K", "10")))
-                bmax = max(2, int(os.getenv("EMBED_BRAIN_EXPAND_MAX_TOKENS", "6")))
+                btop = 10
+                bmax = 6
                 brain_pairs = await _brain_activate(exp_query, top_k=btop)
                 seen_bt: set[str] = set()
                 btoks: List[str] = []
@@ -560,10 +561,7 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
 
     # 3b) context replace (multi-variant tolerances)
     if (args.context_before or "") and path:
-        try:
-            tol = float(args.context_tolerance) if (args.context_tolerance is not None) else float(os.getenv("JINX_PATCH_CONTEXT_TOL", "0.72"))
-        except Exception:
-            tol = 0.72
+        tol = float(args.context_tolerance) if (args.context_tolerance is not None) else 0.72
         candidates.append((
             "context",
             lambda: patch_context_replace(path, args.context_before or "", code, preview=True, tolerance=tol),
@@ -733,10 +731,7 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
 
     # Timeboxed concurrent evaluation and selection (batched)
     best: Dict[str, object] | None = None
-    try:
-        PREV_CONC = max(1, int(os.getenv("JINX_AUTOPATCH_PREVIEW_CONC", "4")))
-    except Exception:
-        PREV_CONC = 4
+    PREV_CONC = 4
     # Helper scorer
     def _score(name: str, diff: str, total: int) -> Tuple[int, int, int, int, int]:
         base_for_ok = name.split("@", 1)[0]
@@ -861,9 +856,9 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
             okc, detailc = await best["commit"]()
     else:
         okc, detailc = await best["commit"]()
-    # Background embedding refresh for the affected file (env-gated)
+    # Background embedding refresh for the affected file (always enabled)
     try:
-        if okc and str(os.getenv("JINX_EMBED_REFRESH_ON_COMMIT", "1")).lower() not in ("", "0", "false", "off", "no") and _sha_path is not None:
+        if okc and _sha_path is not None:
             # Determine rel path
             relp = None
             if path:
@@ -903,9 +898,9 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
                             pass
     except Exception:
         pass
-    # Optional quick verify for Python when path provided
+    # Quick verify for Python when path provided (always enabled)
     try:
-        if okc and path and str(path).endswith('.py') and str(os.getenv('JINX_AUTOPATCH_VERIFY_PY', '1')).lower() not in ('', '0', 'false', 'off', 'no'):
+        if okc and path and str(path).endswith('.py'):
             import py_compile as _pyc
             # Admission guard for verify
             if _guard is not None:
@@ -1008,6 +1003,13 @@ async def autopatch(args: AutoPatchArgs) -> Tuple[bool, str, str]:
                 await _brain_reinf(keys, weight=1.0)
             except Exception:
                 pass
+    except Exception:
+        pass
+    # Report outcome to AutoBrain for learning
+    try:
+        elapsed_ms = (time.monotonic() - start_ts) * 1000
+        _ab_record("autopatch_max_ms", okc, elapsed_ms)
+        _ab_record("autopatch_search_topk", okc, elapsed_ms)
     except Exception:
         pass
     return okc, str(best["name"]), detailc

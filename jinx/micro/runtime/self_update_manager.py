@@ -23,6 +23,15 @@ from jinx.micro.runtime.self_update_sign import verify_stage_signature
 from jinx.micro.runtime.plugins import publish_event as _pub_evt
 
 
+_SELFUPDATE_TIMEOUT_S = 18.0
+_SELFUPDATE_USE_VENV = True
+_SELFUPDATE_GREEN_LOWPRIO = True
+_SELFUPDATE_CANARY = True
+_SELFUPDATE_STABILIZE_SEC = 10.0
+_SELFUPDATE_AUTO_ROLLBACK = True
+_SELFUPDATE_DRAIN_SEC = 6.0
+
+
 class SelfUpdateManager(MicroProgram):
     """Blue-Green self-update orchestrator with preflight and rollback.
 
@@ -54,9 +63,9 @@ class SelfUpdateManager(MicroProgram):
         kw = payload.get("kwargs") or {}
         source_dir = (kw.get("source_dir") or "").strip()
         try:
-            timeout_s = float(kw.get("timeout_s") or os.getenv("JINX_SELFUPDATE_TIMEOUT_S", "18.0"))
+            timeout_s = float(kw.get("timeout_s") or _SELFUPDATE_TIMEOUT_S)
         except Exception:
-            timeout_s = 18.0
+            timeout_s = _SELFUPDATE_TIMEOUT_S
         await self._apply_self_update(source_dir or None, timeout_s=timeout_s)
 
     async def _apply_self_update(self, source_dir: Optional[str], *, timeout_s: float) -> None:
@@ -166,7 +175,7 @@ class SelfUpdateManager(MicroProgram):
         env["JINX_API_ARCHITECT_ENABLE"] = "0"
         # Optional ephemeral venv
         try:
-            if str(os.getenv("JINX_SELFUPDATE_VENV", "1")).lower() not in ("", "0", "false", "off", "no"):
+            if _SELFUPDATE_USE_VENV:
                 _jr("selfupdate.venv_create", stage="preflight", ok=None)
                 vpy = await create_venv(stage_dir)
                 if vpy:
@@ -199,7 +208,7 @@ class SelfUpdateManager(MicroProgram):
         code2 = (
             "import importlib, os as _os, compileall; "
             "# Compile staged package to catch syntax errors early\n"
-            "_pkg = _os.getenv('JINX_PACKAGE_DIR') or ''\n"
+            "_pkg = _os.environ.get('JINX_PACKAGE_DIR','') or ''\n"
             "compileall.compile_dir(_pkg, force=False, quiet=1)\n"
             "import jinx; import jinx.orchestrator; import jinx.runtime_service; "
             "import jinx.micro.runtime.api; import jinx.micro.runtime.plugins; "
@@ -306,7 +315,7 @@ class SelfUpdateManager(MicroProgram):
             try:
                 if os.name == "nt":
                     # Lower green priority during stabilization
-                    if str(os.getenv("JINX_SELFUPDATE_GREEN_LOWPRIO", "1")).lower() not in ("", "0", "false", "off", "no"):
+                    if _SELFUPDATE_GREEN_LOWPRIO:
                         for flag in (getattr(_sp, "BELOW_NORMAL_PRIORITY_CLASS", 0), getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)):
                             creationflags |= int(flag or 0)
             except Exception:
@@ -352,7 +361,7 @@ class SelfUpdateManager(MicroProgram):
         _jr("selfupdate.handshake_ok", stage="green", ok=True)
         # Optional shadow canary
         try:
-            if str(os.getenv("JINX_SELFUPDATE_CANARY", "1")).lower() not in ("", "0", "false", "off", "no"):
+            if _SELFUPDATE_CANARY:
                 ok_can = await self._shadow_canary(shadow_dir, count=5, timeout_s=min(4.0, max(2.0, timeout_s * 0.25)))
                 _jr("selfupdate.canary_ok" if ok_can else "selfupdate.canary_failed", stage="green", ok=ok_can)
                 if not ok_can:
@@ -366,10 +375,7 @@ class SelfUpdateManager(MicroProgram):
             _jr("selfupdate.canary_error", stage="green", ok=False)
             return False
         # Green is healthy: stabilization window before shutting down blue
-        try:
-            stab_sec = float(os.getenv("JINX_SELFUPDATE_STABILIZE_SEC", "10.0"))
-        except Exception:
-            stab_sec = 10.0
+        stab_sec = _SELFUPDATE_STABILIZE_SEC
         t_end = time.time() + max(1.0, stab_sec)
         while time.time() < t_end:
             await asyncio.sleep(0.3)
@@ -420,7 +426,7 @@ class SelfUpdateManager(MicroProgram):
 
     async def _try_rollback_to_lkg(self, *, timeout_s: float) -> bool:
         try:
-            if str(os.getenv("JINX_SELFUPDATE_AUTO_ROLLBACK", "1")).lower() in ("", "0", "false", "off", "no"):
+            if not _SELFUPDATE_AUTO_ROLLBACK:
                 return False
             lkg = self._read_lkg()
             if not lkg:
@@ -478,10 +484,7 @@ class SelfUpdateManager(MicroProgram):
         except Exception:
             pass
         # Drain: wait for active_turns to reach 0 or timeout
-        try:
-            drain_sec = float(os.getenv("JINX_SELFUPDATE_DRAIN_SEC", "6.0"))
-        except Exception:
-            drain_sec = 6.0
+        drain_sec = _SELFUPDATE_DRAIN_SEC
         end_t = time.time() + max(1.0, drain_sec)
         while time.time() < end_t:
             try:

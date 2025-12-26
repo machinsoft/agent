@@ -1,30 +1,26 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Tuple
-
-
-async def _run_git(*args: str, cwd: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return ""
-    return out.decode(errors="ignore").strip()
+from .ops import run_git_for_stdout, GitToolingError
 
 
 async def git_diff_to_remote(cwd: str) -> Tuple[str, str]:
-    """Return (sha, diff) vs upstream if available; fall back to empty strings.
-
-    - sha: current HEAD commit hash (short).
-    - diff: unified diff vs upstream ("@{u}") if tracking branch exists, else empty.
-    """
-    sha = await _run_git("rev-parse", "--short", "HEAD", cwd=cwd)
-    # Try upstream diff first
-    diff = await _run_git("diff", "@{u}", cwd=cwd) or await _run_git("diff", cwd=cwd)
+    sha = ""
+    try:
+        sha = await run_git_for_stdout(cwd, ["rev-parse", "--short", "HEAD"])
+    except GitToolingError:
+        sha = ""
+    upstream = ""
+    try:
+        upstream = await run_git_for_stdout(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    except GitToolingError:
+        upstream = ""
+    diff = ""
+    try:
+        if upstream:
+            diff = await run_git_for_stdout(cwd, ["diff", upstream])
+        else:
+            diff = await run_git_for_stdout(cwd, ["diff"])
+    except GitToolingError:
+        diff = ""
     return sha, diff

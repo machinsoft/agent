@@ -37,7 +37,7 @@ def _rel_to_root(path: str) -> str:
 
 async def _best_hit_in_file(path: str, query: str, rep_lines: List[str], *, topk: int, margin: int, tol: float) -> Tuple[int, int] | None:
     rel = _rel_to_root(path)
-    hits = await search_project_cached(query, k=max(1, topk), max_time_ms=int(os.getenv("JINX_SEMANTIC_PATCH_MS", "400")))
+    hits = await search_project_cached(query, k=max(1, topk), max_time_ms=400)
     # Prefer hits that are in the same file
     candidates = [h for h in (hits or []) if str(h.get("file") or "").replace("\\", "/") == rel]
     if not candidates:
@@ -81,18 +81,9 @@ async def patch_semantic_in_file(path: str, query: str, replacement: str, *, pre
     lines = cur.splitlines()
     rep_lines = (replacement or "").splitlines()
     # Pick defaults
-    try:
-        k = int(topk) if topk is not None else int(os.getenv("JINX_SEMANTIC_PATCH_TOPK", "5"))
-    except Exception:
-        k = 5
-    try:
-        mg = int(margin) if margin is not None else int(os.getenv("JINX_SEMANTIC_PATCH_MARGIN", "6"))
-    except Exception:
-        mg = 6
-    try:
-        tl = float(tol) if tol is not None else float(os.getenv("JINX_SEMANTIC_PATCH_TOL", "0.55"))
-    except Exception:
-        tl = 0.55
+    k = int(topk) if topk is not None else 5
+    mg = int(margin) if margin is not None else 6
+    tl = float(tol) if tol is not None else 0.55
 
     # Try embedding-guided window
     loc = None

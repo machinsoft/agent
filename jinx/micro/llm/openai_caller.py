@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re as _re
 from typing import Any
 
@@ -14,6 +13,18 @@ import asyncio as _asyncio
 import queue as _queue
 
 
+_PROMPT_DEDUP_ON = True
+_PROMPT_MAX_INST_CHARS = 12000
+_PROMPT_MAX_INPUT_CHARS = 12000
+_PROMPT_MIN_PARA_CHARS = 200
+_PROMPT_MIN_LINE_CHARS = 80
+_PROMPT_SHINGLE_CHARS = 80
+_PROMPT_SHINGLE_STEP = 20
+_PROMPT_DUP_OVERLAP = 0.9
+_STREAM_INST_MAX_CHARS = 16000
+_STREAM_INPUT_MAX_CHARS = 12000
+
+
 def _normalize_prompt_payload(instructions: str, input_text: str) -> tuple[str, str]:
     """Deduplicate and clip prompt pieces to reduce token waste.
 
@@ -21,43 +32,16 @@ def _normalize_prompt_payload(instructions: str, input_text: str) -> tuple[str, 
     - Collapses excessive blank lines and consecutive duplicate long lines.
     - Clips by env budgets. Env gates allow turning off if needed.
     """
-    # Gate
-    try:
-        on = (os.getenv("JINX_PROMPT_DEDUP", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        on = True
-    if not on:
+    if not _PROMPT_DEDUP_ON:
         return instructions, input_text
     # Budgets / thresholds
-    try:
-        max_ins = int(os.getenv("JINX_PROMPT_MAX_INST_CHARS", "12000"))
-    except Exception:
-        max_ins = 12000
-    try:
-        max_inp = int(os.getenv("JINX_PROMPT_MAX_INPUT_CHARS", "12000"))
-    except Exception:
-        max_inp = 12000
-    try:
-        min_para = int(os.getenv("JINX_PROMPT_MIN_PARA_CHARS", "200"))
-    except Exception:
-        min_para = 200
-    try:
-        min_line = int(os.getenv("JINX_PROMPT_MIN_LINE_CHARS", "80"))
-    except Exception:
-        min_line = 80
-
-    try:
-        sh_sz = int(os.getenv("JINX_PROMPT_SHINGLE_CHARS", "80"))
-    except Exception:
-        sh_sz = 80
-    try:
-        sh_step = int(os.getenv("JINX_PROMPT_SHINGLE_STEP", "20"))
-    except Exception:
-        sh_step = 20
-    try:
-        dup_overlap = float(os.getenv("JINX_PROMPT_DUP_OVERLAP", "0.9"))
-    except Exception:
-        dup_overlap = 0.9
+    max_ins = _PROMPT_MAX_INST_CHARS
+    max_inp = _PROMPT_MAX_INPUT_CHARS
+    min_para = _PROMPT_MIN_PARA_CHARS
+    min_line = _PROMPT_MIN_LINE_CHARS
+    sh_sz = _PROMPT_SHINGLE_CHARS
+    sh_step = _PROMPT_SHINGLE_STEP
+    dup_overlap = _PROMPT_DUP_OVERLAP
 
     def _shingles(s: str) -> set[str]:
         t = s
@@ -132,28 +116,17 @@ async def call_openai(instructions: str, model: str, input_text: str) -> str:
     Uses to_thread to run the sync SDK call and relies on the shared retry helper
     at the caller site to provide resiliency.
     """
-    try:
-        # Auto-adjustment: if no API key is configured, return a graceful stub response
-        if not (os.getenv("OPENAI_API_KEY") or ""):
-            await bomb_log("OPENAI_API_KEY missing; LLM disabled — returning stub output")
-            return (
-                "<llm_disabled>\n"
-                "No OpenAI API key configured. Set OPENAI_API_KEY in .env to enable model calls.\n"
-                "</llm_disabled>"
-            )
-        # Normalize to prevent duplicated large chunks from reaching the API
-        instructions, input_text = _normalize_prompt_payload(instructions, input_text)
-        # Heuristic: enable File Search tools only for code-like queries unless gated off
+    # Normalize to prevent duplicated large chunks from reaching the API
+    instructions, input_text = _normalize_prompt_payload(instructions, input_text)
+    extra_kwargs: dict[str, Any]
+    if not _is_code_like(input_text or ""):
+        extra_kwargs = {}
+    else:
         try:
-            fs_gate_on = (os.getenv("JINX_FILESEARCH_GATE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-        except Exception:
-            fs_gate_on = True
-        extra_kwargs: dict[str, Any]
-        if fs_gate_on and not _is_code_like(input_text or ""):
-            extra_kwargs = {}
-        else:
             extra_kwargs = build_file_search_tools()
-        # Legacy single-sample path
+        except Exception:
+            extra_kwargs = {}
+    try:
         return await call_openai_cached(
             instructions=instructions,
             model=model,
@@ -171,48 +144,28 @@ async def call_openai_validated(instructions: str, model: str, input_text: str, 
     Enabled by default via env (JINX_LLM_MULTI_ENABLE=1). Falls back to single-sample
     cached call when disabled.
     """
-    try:
-        multi_on = (os.getenv("JINX_LLM_MULTI_ENABLE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        multi_on = True
     # Normalize first
     instructions, input_text = _normalize_prompt_payload(instructions, input_text)
     # Hard clamp for streaming payloads (env-configurable)
-    try:
-        smax_i = int(os.getenv("JINX_STREAM_INST_MAX_CHARS", "16000"))
-    except Exception:
-        smax_i = 16000
-    try:
-        smax_t = int(os.getenv("JINX_STREAM_INPUT_MAX_CHARS", "12000"))
-    except Exception:
-        smax_t = 12000
+    smax_i = _STREAM_INST_MAX_CHARS
+    smax_t = _STREAM_INPUT_MAX_CHARS
     if len(instructions) > smax_i:
         instructions = instructions[:smax_i]
     if len(input_text) > smax_t:
         input_text = input_text[:smax_t]
-    # Heuristic: enable File Search tools only for code-like queries unless gated off
-    try:
-        fs_gate_on = (os.getenv("JINX_FILESEARCH_GATE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        fs_gate_on = True
-    if fs_gate_on and not _is_code_like(input_text or ""):
+    if not _is_code_like(input_text or ""):
         extra_kwargs: dict[str, Any] = {}
     else:
-        extra_kwargs = build_file_search_tools()
-    if multi_on:
-        return await call_openai_multi_validated(
-            instructions=instructions,
-            model=model,
-            input_text=input_text,
-            code_id=code_id,
-            base_extra_kwargs=extra_kwargs,
-        )
-    # Fallback
-    return await call_openai_cached(
+        try:
+            extra_kwargs = build_file_search_tools()
+        except Exception:
+            extra_kwargs = {}
+    return await call_openai_multi_validated(
         instructions=instructions,
         model=model,
         input_text=input_text,
-        extra_kwargs=extra_kwargs,
+        code_id=code_id,
+        base_extra_kwargs=extra_kwargs,
     )
 
 
@@ -231,14 +184,13 @@ async def call_openai_stream_first_block(
     # Normalize first
     instructions, input_text = _normalize_prompt_payload(instructions, input_text)
     # File Search gating
-    try:
-        fs_gate_on = (os.getenv("JINX_FILESEARCH_GATE", "1").strip().lower() not in ("", "0", "false", "off", "no"))
-    except Exception:
-        fs_gate_on = True
-    if fs_gate_on and not _is_code_like(input_text or ""):
+    if not _is_code_like(input_text or ""):
         extra_kwargs: dict[str, Any] = {}
     else:
-        extra_kwargs = build_file_search_tools()
+        try:
+            extra_kwargs = build_file_search_tools()
+        except Exception:
+            extra_kwargs = {}
 
     ltag = f"<python_{code_id}>"
     rtag = f"</python_{code_id}>"

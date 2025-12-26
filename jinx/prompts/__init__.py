@@ -59,6 +59,7 @@ from . import reprogram_adversarial  # noqa: F401
 from . import repair_suggest  # noqa: F401
 from . import repair_stub  # noqa: F401
 from . import code_audit  # noqa: F401
+from . import multi_task  # noqa: F401
 
 
 # --- Health check utilities ---

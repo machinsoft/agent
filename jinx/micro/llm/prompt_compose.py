@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import re
 import sys
@@ -26,7 +25,6 @@ async def compose_dynamic_prompt(text: str, *, key: str) -> str:
 
     Supported forms:
     - {{var:key}} -> code tag id
-    - {{env:NAME}} -> environment variable NAME
     - {{anchors:questions[:N]}} / {{anchors:symbols[:N]}} / {{anchors:paths[:N]}} -> comma-separated
     - {{sys:os|py|cwd}} -> platform system / python version / current working dir
     - {{time:iso|epoch}} -> current time ISO8601 or seconds since epoch
@@ -48,8 +46,7 @@ async def compose_dynamic_prompt(text: str, *, key: str) -> str:
 
     # 2) Env
     def _env_sub(m: re.Match) -> str:
-        name = m.group(1).strip().upper()
-        return os.getenv(name, "")
+        return ""
 
     out = _ENV_RE.sub(_env_sub, out)
 
@@ -82,6 +79,7 @@ async def compose_dynamic_prompt(text: str, *, key: str) -> str:
             return sys.version.split(" ")[0]
         if what == "cwd":
             try:
+                import os
                 return os.getcwd()
             except Exception:
                 return ""
