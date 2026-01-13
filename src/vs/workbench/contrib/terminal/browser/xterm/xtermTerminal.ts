@@ -46,7 +46,7 @@ import { equals } from '../../../../../base/common/objects.js';
 import type { IProgressState } from '@xterm/addon-progress';
 import type { CommandDetectionCapability } from '../../../../../platform/terminal/common/capabilities/commandDetectionCapability.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { assert } from '../../../../../base/common/assert.js';
+import { isNumber } from '../../../../../base/common/types.js';
 
 const enum RenderConstants {
 	SmoothScrollDuration = 125
@@ -107,6 +107,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	get lastInputEvent(): string | undefined { return this._lastInputEvent; }
 	private _progressState: IProgressState = { state: 0, value: 0 };
 	get progressState(): IProgressState { return this._progressState; }
+	get buffer() { return this.raw.buffer; }
 
 	// Always on addons
 	private _markNavigationAddon: MarkNavigationAddon;
@@ -243,6 +244,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			},
 			ignoreBracketedPasteMode: config.ignoreBracketedPasteMode,
 			rescaleOverlappingGlyphs: config.rescaleOverlappingGlyphs,
+			vtExtensions: {
+				kittyKeyboard: config.enableKittyKeyboardProtocol,
+				win32InputMode: config.enableWin32InputMode,
+			},
 			windowOptions: {
 				getWinSizePixels: true,
 				getCellSizePixels: true,
@@ -537,6 +542,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this.raw.options.wordSeparator = config.wordSeparators;
 		this.raw.options.ignoreBracketedPasteMode = config.ignoreBracketedPasteMode;
 		this.raw.options.rescaleOverlappingGlyphs = config.rescaleOverlappingGlyphs;
+		this.raw.options.vtExtensions = {
+			kittyKeyboard: config.enableKittyKeyboardProtocol,
+			win32InputMode: config.enableWin32InputMode,
+		};
 
 		this._updateSmoothScrolling();
 		if (this._attached) {
@@ -803,6 +812,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		if (!this.raw.element || this._webglAddon && this._webglAddonCustomGlyphs === this._terminalConfigurationService.config.customGlyphs) {
 			return;
 		}
+
+		// Dispose of existing addon before creating a new one to avoid leaking WebGL contexts
+		this._disposeOfWebglRenderer();
+
 		this._webglAddonCustomGlyphs = this._terminalConfigurationService.config.customGlyphs;
 
 		const Addon = await this._xtermAddonLoader.importAddon('webgl');
@@ -892,6 +905,9 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	private _disposeOfWebglRenderer(): void {
+		if (!this._webglAddon) {
+			return;
+		}
 		try {
 			this._webglAddon?.dispose();
 		} catch {
@@ -905,22 +921,24 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._onDidRequestRefreshDimensions.fire();
 	}
 
-	async getRangeAsVT(startMarker: IXtermMarker, endMarker?: IXtermMarker, skipLastLine?: boolean): Promise<string> {
+	async getRangeAsVT(startMarker?: IXtermMarker, endMarker?: IXtermMarker, skipLastLine?: boolean): Promise<string> {
 		if (!this._serializeAddon) {
 			const Addon = await this._xtermAddonLoader.importAddon('serialize');
 			this._serializeAddon = new Addon();
 			this.raw.loadAddon(this._serializeAddon);
 		}
 
-		assert(startMarker.line !== -1);
-		let end = endMarker?.line ?? this.raw.buffer.active.length - 1;
-		if (skipLastLine) {
+		const hasValidEndMarker = isNumber(endMarker?.line);
+		const start = isNumber(startMarker?.line) && startMarker?.line > -1 ? startMarker.line : 0;
+		let end = hasValidEndMarker ? endMarker.line : this.raw.buffer.active.length - 1;
+		if (skipLastLine && hasValidEndMarker) {
 			end = end - 1;
 		}
+		end = Math.max(end, start);
 		return this._serializeAddon.serialize({
 			range: {
-				start: startMarker.line,
-				end: end
+				start: startMarker?.line ?? 0,
+				end
 			}
 		});
 	}
@@ -1001,6 +1019,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	override dispose(): void {
 		this._anyTerminalFocusContextKey.reset();
 		this._anyFocusedTerminalHasSelection.reset();
+		this._disposeOfWebglRenderer();
 		this._onDidDispose.fire();
 		super.dispose();
 	}

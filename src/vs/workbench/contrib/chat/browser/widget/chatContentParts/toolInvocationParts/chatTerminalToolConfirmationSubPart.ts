@@ -55,6 +55,7 @@ export interface ITerminalNewAutoApproveRule {
 		approve: boolean;
 		matchCommandLine?: boolean;
 	};
+	scope: 'session' | 'workspace' | 'user';
 }
 
 export type TerminalNewAutoApproveButtonData = (
@@ -148,8 +149,9 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 			}
 		};
 		const languageId = this.languageService.getLanguageIdByLanguageName(terminalData.language ?? 'sh') ?? 'shellscript';
+		const initialContent = (terminalData.commandLine.toolEdited ?? terminalData.commandLine.original).trimStart();
 		const model = this._register(this.modelService.createModel(
-			terminalData.commandLine.toolEdited ?? terminalData.commandLine.original,
+			initialContent,
 			this.languageService.createById(languageId),
 			this._getUniqueCodeBlockUri(),
 			true
@@ -181,7 +183,9 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 			this._onDidChangeHeight.fire();
 		}));
 		this._register(model.onDidChangeContent(e => {
-			terminalData.commandLine.userEdited = model.getValue();
+			const currentValue = model.getValue();
+			// Only set userEdited if the content actually differs from the initial value
+			terminalData.commandLine.userEdited = currentValue !== initialContent ? currentValue : undefined;
 		}));
 		const elements = h('.chat-confirmation-message-terminal', [
 			h('.chat-confirmation-message-terminal-editor@editor'),
@@ -231,13 +235,13 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 						const optedIn = await this._showAutoApproveWarning();
 						if (optedIn) {
 							this.storageService.store(TerminalToolConfirmationStorageKeys.TerminalAutoApproveWarningAccepted, true, StorageScope.APPLICATION, StorageTarget.USER);
-							// This is good to auto approve immediately
-							if (!terminalCustomActions) {
+							// If this command would have been auto-approved, approve immediately
+							if (terminalData.autoApproveInfo) {
 								toolConfirmKind = ToolConfirmKind.UserAction;
 							}
 							// If this would not have been auto approved, enable the options and
 							// do not complete
-							else {
+							else if (terminalCustomActions) {
 								for (const action of terminalCustomActions) {
 									if (!(action instanceof Separator)) {
 										action.disabled = false;
@@ -258,28 +262,65 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 					}
 					case 'newRule': {
 						const newRules = asArray(data.rule);
-						const inspect = this.configurationService.inspect(TerminalContribSettingId.AutoApprove);
-						const oldValue = (inspect.user?.value as Record<string, unknown> | undefined) ?? {};
-						let newValue: Record<string, unknown>;
-						if (isObject(oldValue)) {
-							newValue = { ...oldValue };
-							for (const newRule of newRules) {
-								newValue[newRule.key] = newRule.value;
-							}
-						} else {
-							this.preferencesService.openSettings({
-								jsonEditor: true,
-								target: ConfigurationTarget.USER,
-								revealSetting: {
-									key: TerminalContribSettingId.AutoApprove
-								},
-							});
-							throw new ErrorNoTelemetry(`Cannot add new rule, existing setting is unexpected format`);
+
+						// Group rules by scope
+						const sessionRules = newRules.filter(r => r.scope === 'session');
+						const workspaceRules = newRules.filter(r => r.scope === 'workspace');
+						const userRules = newRules.filter(r => r.scope === 'user');
+
+						// Handle session-scoped rules (temporary, in-memory only)
+						const chatSessionResource = this.context.element.sessionResource;
+						for (const rule of sessionRules) {
+							this.terminalChatService.addSessionAutoApproveRule(chatSessionResource, rule.key, rule.value);
 						}
-						await this.configurationService.updateValue(TerminalContribSettingId.AutoApprove, newValue, ConfigurationTarget.USER);
-						function formatRuleLinks(newRules: ITerminalNewAutoApproveRule[]): string {
-							return newRules.map(e => {
-								const settingsUri = createCommandUri(TerminalContribCommandId.OpenTerminalSettingsLink, ConfigurationTarget.USER);
+
+						// Handle workspace-scoped rules
+						if (workspaceRules.length > 0) {
+							const inspect = this.configurationService.inspect(TerminalContribSettingId.AutoApprove);
+							const oldValue = (inspect.workspaceValue as Record<string, unknown> | undefined) ?? {};
+							if (isObject(oldValue)) {
+								const newValue: Record<string, unknown> = { ...oldValue };
+								for (const rule of workspaceRules) {
+									newValue[rule.key] = rule.value;
+								}
+								await this.configurationService.updateValue(TerminalContribSettingId.AutoApprove, newValue, ConfigurationTarget.WORKSPACE);
+							} else {
+								this.preferencesService.openSettings({
+									jsonEditor: true,
+									target: ConfigurationTarget.WORKSPACE,
+									revealSetting: { key: TerminalContribSettingId.AutoApprove },
+								});
+								throw new ErrorNoTelemetry(`Cannot add new rule, existing workspace setting is unexpected format`);
+							}
+						}
+
+						// Handle user-scoped rules
+						if (userRules.length > 0) {
+							const inspect = this.configurationService.inspect(TerminalContribSettingId.AutoApprove);
+							const oldValue = (inspect.userValue as Record<string, unknown> | undefined) ?? {};
+							if (isObject(oldValue)) {
+								const newValue: Record<string, unknown> = { ...oldValue };
+								for (const rule of userRules) {
+									newValue[rule.key] = rule.value;
+								}
+								await this.configurationService.updateValue(TerminalContribSettingId.AutoApprove, newValue, ConfigurationTarget.USER);
+							} else {
+								this.preferencesService.openSettings({
+									jsonEditor: true,
+									target: ConfigurationTarget.USER,
+									revealSetting: { key: TerminalContribSettingId.AutoApprove },
+								});
+								throw new ErrorNoTelemetry(`Cannot add new rule, existing setting is unexpected format`);
+							}
+						}
+
+						function formatRuleLinks(rules: ITerminalNewAutoApproveRule[], scope: 'session' | 'workspace' | 'user'): string {
+							return rules.map(e => {
+								if (scope === 'session') {
+									return `\`${e.key}\``;
+								}
+								const target = scope === 'workspace' ? ConfigurationTarget.WORKSPACE : ConfigurationTarget.USER;
+								const settingsUri = createCommandUri(TerminalContribCommandId.OpenTerminalSettingsLink, target);
 								return `[\`${e.key}\`](${settingsUri.toString()} "${localize('ruleTooltip', 'View rule in settings')}")`;
 							}).join(', ');
 						}
@@ -288,10 +329,24 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 								enabledCommands: [TerminalContribCommandId.OpenTerminalSettingsLink]
 							}
 						};
-						if (newRules.length === 1) {
-							terminalData.autoApproveInfo = new MarkdownString(localize('newRule', 'Auto approve rule {0} added', formatRuleLinks(newRules)), mdTrustSettings);
-						} else if (newRules.length > 1) {
-							terminalData.autoApproveInfo = new MarkdownString(localize('newRule.plural', 'Auto approve rules {0} added', formatRuleLinks(newRules)), mdTrustSettings);
+						const parts: string[] = [];
+						if (sessionRules.length > 0) {
+							parts.push(sessionRules.length === 1
+								? localize('newRule.session', 'Session auto approve rule {0} added', formatRuleLinks(sessionRules, 'session'))
+								: localize('newRule.session.plural', 'Session auto approve rules {0} added', formatRuleLinks(sessionRules, 'session')));
+						}
+						if (workspaceRules.length > 0) {
+							parts.push(workspaceRules.length === 1
+								? localize('newRule.workspace', 'Workspace auto approve rule {0} added', formatRuleLinks(workspaceRules, 'workspace'))
+								: localize('newRule.workspace.plural', 'Workspace auto approve rules {0} added', formatRuleLinks(workspaceRules, 'workspace')));
+						}
+						if (userRules.length > 0) {
+							parts.push(userRules.length === 1
+								? localize('newRule.user', 'User auto approve rule {0} added', formatRuleLinks(userRules, 'user'))
+								: localize('newRule.user.plural', 'User auto approve rules {0} added', formatRuleLinks(userRules, 'user')));
+						}
+						if (parts.length > 0) {
+							terminalData.autoApproveInfo = new MarkdownString(parts.join(', '), mdTrustSettings);
 						}
 						toolConfirmKind = ToolConfirmKind.UserAction;
 						break;
@@ -305,9 +360,9 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 						break;
 					}
 					case 'sessionApproval': {
-						const sessionId = this.context.element.sessionId;
-						this.terminalChatService.setChatSessionAutoApproval(sessionId, true);
-						const disableUri = createCommandUri(TerminalContribCommandId.DisableSessionAutoApproval, sessionId);
+						const sessionResource = this.context.element.sessionResource;
+						this.terminalChatService.setChatSessionAutoApproval(sessionResource, true);
+						const disableUri = createCommandUri(TerminalContribCommandId.DisableSessionAutoApproval, sessionResource);
 						const mdTrustSettings = {
 							isTrusted: {
 								enabledCommands: [TerminalContribCommandId.DisableSessionAutoApproval]
@@ -332,8 +387,7 @@ export class ChatTerminalToolConfirmationSubPart extends BaseChatToolInvocationS
 
 	private _createButtons(moreActions: (IChatConfirmationButton<TerminalNewAutoApproveButtonData> | Separator)[] | undefined): IChatConfirmationButton<boolean | TerminalNewAutoApproveButtonData>[] {
 		const getLabelAndTooltip = (label: string, actionId: string, tooltipDetail: string = label): { label: string; tooltip: string } => {
-			const keybinding = this.keybindingService.lookupKeybinding(actionId)?.getLabel();
-			const tooltip = keybinding ? `${tooltipDetail} (${keybinding})` : (tooltipDetail);
+			const tooltip = this.keybindingService.appendKeybinding(tooltipDetail, actionId);
 			return { label, tooltip };
 		};
 		return [
