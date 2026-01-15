@@ -6,6 +6,8 @@
 	"lightPlusColorThemeLabel": "Light+",
 	"lightModernThemeLabel": "Light Modern",
 	"darkColorThemeLabel": "Dark (Visual Studio)",
+	"AgentThemeLabel": "Agent Theme (Agent Studio Code)",
+	"AgentThemeColorblindLabel": "Agent Theme Colorblind (Agent Studio Code)",
 	"lightColorThemeLabel": "Light (Visual Studio)",
 	"hcColorThemeLabel": "Dark High Contrast",
 	"lightHcColorThemeLabel": "Light High Contrast",

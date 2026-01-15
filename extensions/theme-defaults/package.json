@@ -26,6 +26,18 @@
         "path": "./themes/dark_modern.json"
       },
       {
+        "id": "Agent Default Dark",
+        "label": "%AgentThemeLabel%",
+        "uiTheme": "vs-dark",
+        "path": "./themes/agent.json"
+      },
+      {
+        "id": "Agent Default Dark Colorblind",
+        "label": "%AgentThemeColorblindLabel%",
+        "uiTheme": "vs-dark",
+        "path": "./themes/agent_colorblind.json"
+      },
+      {
         "id": "Default Light+",
         "label": "%lightPlusColorThemeLabel%",
         "uiTheme": "vs",

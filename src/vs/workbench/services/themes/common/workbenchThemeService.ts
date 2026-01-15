@@ -39,7 +39,7 @@ export enum ThemeSettings {
 }
 
 export enum ThemeSettingDefaults {
-	COLOR_THEME_DARK = 'Default Dark Modern',
+	COLOR_THEME_DARK = 'Agent Default Dark',
 	COLOR_THEME_LIGHT = 'Default Light Modern',
 	COLOR_THEME_HC_DARK = 'Default High Contrast',
 	COLOR_THEME_HC_LIGHT = 'Default High Contrast Light',
@@ -478,7 +478,7 @@ export interface ITokenColorizationSetting {
 	background?: string;
 	fontStyle?: string; /* [italic|bold|underline|strikethrough] */
 	fontFamily?: string;
-	fontSize?: string;
+	fontSize?: number;
 	lineHeight?: number;
 }
 

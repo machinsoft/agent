@@ -13,8 +13,9 @@ import { IChatEntitlementService, ChatEntitlement } from '../../../../../service
 import { IObservable, observableValue } from '../../../../../../base/common/observable.js';
 import { ExtensionIdentifier } from '../../../../../../platform/extensions/common/extensions.js';
 import { IStringDictionary } from '../../../../../../base/common/collections.js';
-import { ILanguageModelsConfigurationService } from '../../../common/languageModelsConfiguration.js';
+import { ILanguageModelsConfigurationService, ILanguageModelsProviderGroup } from '../../../common/languageModelsConfiguration.js';
 import { mock } from '../../../../../../base/test/common/mock.js';
+import { ChatAgentLocation } from '../../../common/constants.js';
 
 class MockLanguageModelsService implements ILanguageModelsService {
 	_serviceBrand: undefined;
@@ -47,10 +48,10 @@ class MockLanguageModelsService implements ILanguageModelsService {
 					vendor: vendorId,
 					name: this.vendors.find(v => v.vendor === vendorId)?.displayName || 'Default'
 				},
-				models: []
+				modelIdentifiers: []
 			});
 		}
-		groups[0].models.push({ identifier, metadata });
+		groups[0].modelIdentifiers.push(identifier);
 		this.modelGroups.set(vendorId, groups);
 	}
 
@@ -118,6 +119,8 @@ class MockLanguageModelsService implements ILanguageModelsService {
 
 	async removeLanguageModelsProviderGroup(vendorId: string, providerGroupName: string): Promise<void> {
 	}
+
+	async migrateLanguageModelsProviderGroup(languageModelsProviderGroup: ILanguageModelsProviderGroup): Promise<void> { }
 }
 
 class MockChatEntitlementService implements IChatEntitlementService {
@@ -214,6 +217,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: true,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -232,6 +238,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: true,
 				agentMode: true
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -250,6 +259,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: false,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -268,6 +280,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: false,
 				vision: true,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -604,6 +619,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: true,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -623,6 +641,9 @@ suite('ChatModelsViewModel', () => {
 					toolCalling: true,
 					vision: true,
 					agentMode: true
+				},
+				isDefaultForLocation: {
+					[ChatAgentLocation.Chat]: true
 				}
 			});
 		}
@@ -708,6 +729,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: false,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -734,6 +758,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: false,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
@@ -843,6 +870,9 @@ suite('ChatModelsViewModel', () => {
 				toolCalling: true,
 				vision: false,
 				agentMode: false
+			},
+			isDefaultForLocation: {
+				[ChatAgentLocation.Chat]: true
 			}
 		});
 
